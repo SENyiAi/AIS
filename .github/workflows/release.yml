@@ -11,6 +11,10 @@ on:
         required: true
         default: 'v1.0.0'
 
+# 添加权限声明解决403错误
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -34,28 +38,63 @@ jobs:
     - name: Download Real-CUGAN
       shell: pwsh
       run: |
+        New-Item -ItemType Directory -Force -Path "模型"
         $url = "https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "realcugan.zip"
-        Expand-Archive -Path "realcugan.zip" -DestinationPath "模型/"
-        Remove-Item "realcugan.zip"
+        Expand-Archive -Path "realcugan.zip" -DestinationPath "temp_cugan"
+        Move-Item "temp_cugan/*" "模型/realcugan-ncnn-vulkan-20220728-windows" -ErrorAction SilentlyContinue
+        if (-not (Test-Path "模型/realcugan-ncnn-vulkan-20220728-windows")) {
+            Move-Item "temp_cugan/realcugan-ncnn-vulkan-20220728-windows" "模型/" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "realcugan.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_cugan" -Recurse -ErrorAction SilentlyContinue
     
     - name: Download Real-ESRGAN
       shell: pwsh
       run: |
         $url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "realesrgan.zip"
-        Expand-Archive -Path "realesrgan.zip" -DestinationPath "模型/"
-        Remove-Item "realesrgan.zip"
+        Expand-Archive -Path "realesrgan.zip" -DestinationPath "temp_esrgan"
+        Move-Item "temp_esrgan/*" "模型/realesrgan-ncnn-vulkan-20220424-windows" -ErrorAction SilentlyContinue
+        if (-not (Test-Path "模型/realesrgan-ncnn-vulkan-20220424-windows")) {
+            Move-Item "temp_esrgan/realesrgan-ncnn-vulkan-20220424-windows" "模型/" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "realesrgan.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_esrgan" -Recurse -ErrorAction SilentlyContinue
     
     - name: Download Waifu2x
       shell: pwsh
       run: |
         $url = "https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20250915/waifu2x-ncnn-vulkan-20250915-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "waifu2x.zip"
-        Expand-Archive -Path "waifu2x.zip" -DestinationPath "模型/"
-        Remove-Item "waifu2x.zip"
+        Expand-Archive -Path "waifu2x.zip" -DestinationPath "temp_waifu2x"
+        Move-Item "temp_waifu2x/*" "模型/waifu2x-ncnn-vulkan-20250915-windows" -ErrorAction SilentlyContinue
+        if (-not (Test-Path "模型/waifu2x-ncnn-vulkan-20250915-windows")) {
+            Move-Item "temp_waifu2x/waifu2x-ncnn-vulkan-20250915-windows" "模型/" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "waifu2x.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_waifu2x" -Recurse -ErrorAction SilentlyContinue
     
-    - name: Setup Python for pip
+    - name: Verify model directories
+      shell: pwsh
+      run: |
+        echo "=== 验证模型目录结构 ==="
+        Get-ChildItem -Path "模型" -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
+        
+        $cugan = Test-Path "模型/realcugan-ncnn-vulkan-20220728-windows/realcugan-ncnn-vulkan.exe"
+        $esrgan = Test-Path "模型/realesrgan-ncnn-vulkan-20220424-windows/realesrgan-ncnn-vulkan.exe"
+        $waifu2x = Test-Path "模型/waifu2x-ncnn-vulkan-20250915-windows/waifu2x-ncnn-vulkan.exe"
+        
+        echo "CUGAN exe exists: $cugan"
+        echo "ESRGAN exe exists: $esrgan"
+        echo "WAIFU2X exe exists: $waifu2x"
+        
+        if (-not ($cugan -and $esrgan -and $waifu2x)) {
+            echo "警告: 部分模型文件未找到"
+            Get-ChildItem -Path "模型" -Recurse | ForEach-Object { Write-Host $_.FullName }
+        }
+    
+    - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
@@ -90,19 +129,20 @@ jobs:
         # 安装 Gradio 和依赖到 site-packages
         & "前置/python-3.14.0-embed-amd64/python.exe" -m pip install gradio pillow --target "前置/python-3.14.0-embed-amd64/Lib/site-packages" --no-warn-script-location
         
-        # 清理不需要的文件
+        # 清理
         Remove-Item "前置/python-3.14.0-embed-amd64/get-pip.py" -ErrorAction SilentlyContinue
+        
+        echo "=== Python 环境验证 ==="
+        & "前置/python-3.14.0-embed-amd64/python.exe" --version
     
-    - name: Create Lite package (without Python)
+    - name: Create Lite package
       shell: pwsh
       run: |
         $version = "${{ steps.version.outputs.VERSION }}"
         $packageName = "AIS-$version-Lite"
         
-        # 创建发布目录
         New-Item -ItemType Directory -Force -Path $packageName
         
-        # 复制核心文件
         Copy-Item "AIS.py" -Destination $packageName
         Copy-Item "AIS_WebUI.py" -Destination $packageName
         Copy-Item "i18n.py" -Destination $packageName
@@ -111,26 +151,22 @@ jobs:
         Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
         Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
         
-        # 复制模型
         Copy-Item -Path "模型" -Destination $packageName -Recurse
         
-        # 创建必要的空目录
         New-Item -ItemType Directory -Force -Path "$packageName/输出"
         New-Item -ItemType Directory -Force -Path "$packageName/数据"
         
-        # 压缩
         Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+        echo "Created: $packageName.zip"
     
-    - name: Create Full package (with Python + Gradio)
+    - name: Create Full package
       shell: pwsh
       run: |
         $version = "${{ steps.version.outputs.VERSION }}"
         $packageName = "AIS-$version-Full"
         
-        # 创建发布目录
         New-Item -ItemType Directory -Force -Path $packageName
         
-        # 复制核心文件
         Copy-Item "AIS.py" -Destination $packageName
         Copy-Item "AIS_WebUI.py" -Destination $packageName
         Copy-Item "i18n.py" -Destination $packageName
@@ -139,50 +175,48 @@ jobs:
         Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
         Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
         
-        # 复制模型和前置（包含Python和Gradio）
         Copy-Item -Path "模型" -Destination $packageName -Recurse
         Copy-Item -Path "前置" -Destination $packageName -Recurse
         
-        # 创建必要的空目录
         New-Item -ItemType Directory -Force -Path "$packageName/输出"
         New-Item -ItemType Directory -Force -Path "$packageName/数据"
         
-        # 压缩
         Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+        echo "Created: $packageName.zip"
     
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         name: AIS ${{ steps.version.outputs.VERSION }}
         tag_name: ${{ steps.version.outputs.VERSION }}
         draft: false
         prerelease: false
-        files: |
+        文件: |
           AIS-${{ steps.version.outputs.VERSION }}-Full.zip
           AIS-${{ steps.version.outputs.VERSION }}-Lite.zip
         body: |
           ## AIS 图像超分辨率工具 ${{ steps.version.outputs.VERSION }}
           
-          ### 下载版本说明
+          ### 📦 下载版本说明
           
           | 版本 | 文件 | 说明 |
           |------|------|------|
-          | **完整版 (推荐)** | `AIS-${{ steps.version.outputs.VERSION }}-Full.zip` | 内置 Python 3.12 + Gradio，开箱即用 |
+          | **完整版 (推荐)** | `AIS-${{ steps.version.outputs.VERSION }}-Full.zip` | 内置 Python 3.14 + Gradio，开箱即用 |
           | **精简版** | `AIS-${{ steps.version.outputs.VERSION }}-Lite.zip` | 需自行安装 Python 3.10+ 和依赖 |
           
-          ### 包含引擎
+          ### 🎯 包含引擎
           - **Real-CUGAN** - 动漫图像超分，细节保留出色
           - **Real-ESRGAN** - 通用图像超分，效果稳定
           - **Waifu2x** - 经典动漫超分，速度快
           
           ---
           
-          ### 完整版使用方法
+          ### 🚀 完整版使用方法
           1. 解压缩到任意目录（路径不要有中文）
           2. 双击 `启动.bat` 运行
           3. 浏览器访问 http://127.0.0.1:7860
           
-          ### 精简版使用方法
+          ### 🔧 精简版使用方法
           1. 确保已安装 Python 3.10 或更高版本
           2. 解压缩到任意目录
           3. 运行 `pip install -r requirements.txt` 安装依赖
@@ -190,13 +224,11 @@ jobs:
           
           ---
           
-          ### 系统要求
+          ### ⚠️ 系统要求
           - Windows 10/11 x64
           - 支持 Vulkan 的显卡 (NVIDIA/AMD/Intel)
-          - 完整版约 500MB，精简版约 100MB
           
-          ### 语言支持
-          - 简体中文
-          - English
+          ### 🌐 语言支持
+          - 简体中文 / English
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
