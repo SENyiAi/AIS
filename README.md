@@ -10,11 +10,12 @@
 
 ## ✨ 特性
 
-- 🎨 **多引擎支持**: Real-CUGAN、Real-ESRGAN、Waifu2x
-- 🖥️ **Web 界面**: 基于 Gradio 的现代化界面
-- 🌍 **多语言**: 支持简体中文和英文
-- ⚡ **GPU 加速**: 基于 Vulkan，支持 NVIDIA/AMD/Intel 显卡
-- 📦 **开箱即用**: 下载即用，无需配置环境
+-  **多引擎支持**: Real-CUGAN、Real-ESRGAN、Waifu2x
+-  **Web 界面**: 基于 Gradio 的现代化界面
+-  **多语言**: 支持简体中文和英文
+-  **GPU 加速**: 基于 Vulkan，支持 NVIDIA/AMD/Intel 显卡
+-  **开箱即用**: 下载即用，无需配置环境
+-  **实时预览**: WEBUI内提供滑动条预览前后差异
 <div align="center">
   <img src="https://github.com/user-attachments/assets/a39b3aee-86ba-43a2-aa26-0ed6acfd83a3" height="200" alt="界面预览" />
   <img src="https://github.com/user-attachments/assets/b24ddf12-7cc3-4c7c-82aa-386b998ed269" height="200" alt="噪点去除" />
