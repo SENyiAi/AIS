@@ -19,7 +19,7 @@
   <table>
     <tr>
       <td><img src="https://github.com/user-attachments/assets/f4ddfd86-9ef6-426c-b8ff-2b1906c0989b" width="300" alt="界面预览1" /></td>
-      <td><img src="https://github. com/user-attachments/assets/e9ae87b8-e875-4cc6-9d15-8d1aa11b5cc8" width="300" alt="界面预览2" /></td>
+      <td><img src="https://github.com/user-attachments/assets/b24ddf12-7cc3-4c7c-82aa-386b998ed269" width="300" alt="界面预览2" /></td>
     </tr>
   </table>
 </div>
