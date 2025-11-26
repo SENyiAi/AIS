@@ -12,12 +12,14 @@ MODEL_DIR = BASE_DIR / "模型"
 OUTPUT_DIR = BASE_DIR / "输出"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# 设置本地Python库路径
-LOCAL_PYTHON_DIR = PREREQ_DIR / "python-3.14.0-embed-amd64"
-if LOCAL_PYTHON_DIR.exists():
-    LOCAL_LIB_PATH = LOCAL_PYTHON_DIR / "Lib" / "site-packages"
-    if LOCAL_LIB_PATH.exists() and str(LOCAL_LIB_PATH) not in sys.path:
-        sys.path.insert(0, str(LOCAL_LIB_PATH))
+# 设置本地Python库路径 (支持多个版本)
+for python_dir_name in ["python-3.12.10-embed-amd64", "python-3.12.7-embed-amd64", "python-3.14.0-embed-amd64"]:
+    LOCAL_PYTHON_DIR = PREREQ_DIR / python_dir_name
+    if LOCAL_PYTHON_DIR.exists():
+        LOCAL_LIB_PATH = LOCAL_PYTHON_DIR / "Lib" / "site-packages"
+        if LOCAL_LIB_PATH.exists() and str(LOCAL_LIB_PATH) not in sys.path:
+            sys.path.insert(0, str(LOCAL_LIB_PATH))
+        break
 
 # Gradio自动安装
 def install_gradio() -> bool:

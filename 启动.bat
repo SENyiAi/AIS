@@ -8,10 +8,10 @@ echo                     By SENyiAi
 echo ============================================================
 echo.
 
-REM 检查是否有内置Python (优先检测3.14)
-if exist "前置\python-3.14.0-embed-amd64\python.exe" (
-    echo [检测] 使用内置 Python 3.14 环境
-    set "PYTHON_EXE=前置\python-3.14.0-embed-amd64\python.exe"
+REM 检查是否有内置Python (优先检测3.12.10)
+if exist "前置\python-3.12.10-embed-amd64\python.exe" (
+    echo [检测] 使用内置 Python 3.12 环境
+    set "PYTHON_EXE=前置\python-3.12.10-embed-amd64\python.exe"
 ) else (
     echo [检测] 使用系统 Python 环境
     set "PYTHON_EXE=python"

@@ -11,6 +11,10 @@ on:
         required: true
         default: 'v1.0.0'
 
+# 添加权限声明解决403错误
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -34,28 +38,63 @@ jobs:
     - name: Download Real-CUGAN
       shell: pwsh
       run: |
+        New-Item -ItemType Directory -Force -Path "模型"
         $url = "https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "realcugan.zip"
-        Expand-Archive -Path "realcugan.zip" -DestinationPath "模型/"
-        Remove-Item "realcugan.zip"
+        Expand-Archive -Path "realcugan.zip" -DestinationPath "temp_cugan"
+        Move-Item "temp_cugan/*" "模型/realcugan-ncnn-vulkan-20220728-windows" -ErrorAction SilentlyContinue
+        if (-not (Test-Path "模型/realcugan-ncnn-vulkan-20220728-windows")) {
+            Move-Item "temp_cugan/realcugan-ncnn-vulkan-20220728-windows" "模型/" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "realcugan.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_cugan" -Recurse -ErrorAction SilentlyContinue
     
     - name: Download Real-ESRGAN
       shell: pwsh
       run: |
         $url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "realesrgan.zip"
-        Expand-Archive -Path "realesrgan.zip" -DestinationPath "模型/"
-        Remove-Item "realesrgan.zip"
+        Expand-Archive -Path "realesrgan.zip" -DestinationPath "temp_esrgan"
+        Move-Item "temp_esrgan/*" "模型/realesrgan-ncnn-vulkan-20220424-windows" -ErrorAction SilentlyContinue
+        if (-not (Test-Path "模型/realesrgan-ncnn-vulkan-20220424-windows")) {
+            Move-Item "temp_esrgan/realesrgan-ncnn-vulkan-20220424-windows" "模型/" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "realesrgan.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_esrgan" -Recurse -ErrorAction SilentlyContinue
     
     - name: Download Waifu2x
       shell: pwsh
       run: |
         $url = "https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20250915/waifu2x-ncnn-vulkan-20250915-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "waifu2x.zip"
-        Expand-Archive -Path "waifu2x.zip" -DestinationPath "模型/"
-        Remove-Item "waifu2x.zip"
+        Expand-Archive -Path "waifu2x.zip" -DestinationPath "temp_waifu2x"
+        Move-Item "temp_waifu2x/*" "模型/waifu2x-ncnn-vulkan-20250915-windows" -ErrorAction SilentlyContinue
+        if (-not (Test-Path "模型/waifu2x-ncnn-vulkan-20250915-windows")) {
+            Move-Item "temp_waifu2x/waifu2x-ncnn-vulkan-20250915-windows" "模型/" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "waifu2x.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_waifu2x" -Recurse -ErrorAction SilentlyContinue
     
-    - name: Setup Python for pip
+    - name: Verify model directories
+      shell: pwsh
+      run: |
+        echo "=== 验证模型目录结构 ==="
+        Get-ChildItem -Path "模型" -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
+        
+        $cugan = Test-Path "模型/realcugan-ncnn-vulkan-20220728-windows/realcugan-ncnn-vulkan.exe"
+        $esrgan = Test-Path "模型/realesrgan-ncnn-vulkan-20220424-windows/realesrgan-ncnn-vulkan.exe"
+        $waifu2x = Test-Path "模型/waifu2x-ncnn-vulkan-20250915-windows/waifu2x-ncnn-vulkan.exe"
+        
+        echo "CUGAN exe exists: $cugan"
+        echo "ESRGAN exe exists: $esrgan"
+        echo "WAIFU2X exe exists: $waifu2x"
+        
+        if (-not ($cugan -and $esrgan -and $waifu2x)) {
+            echo "警告: 部分模型文件未找到"
+            Get-ChildItem -Path "模型" -Recurse | ForEach-Object { Write-Host $_.FullName }
+        }
+    
+    - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
@@ -65,93 +104,155 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force -Path "前置"
         
-        # 下载 Python 3.14 嵌入版
-        $url = "https://www.python.org/ftp/python/3.14.0/python-3.14.0-embed-amd64.zip"
+        # 下载 Python 3.12.10 嵌入版 (稳定版，兼容性好)
+        $url = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
         Invoke-WebRequest -Uri $url -OutFile "python-embed.zip"
-        Expand-Archive -Path "python-embed.zip" -DestinationPath "前置/python-3.14.0-embed-amd64"
+        Expand-Archive -Path "python-embed.zip" -DestinationPath "前置/python-3.12.10-embed-amd64"
         Remove-Item "python-embed.zip"
         
         # 修改 pth 文件以支持 site-packages
-        $pthFile = "前置/python-3.14.0-embed-amd64/python314._pth"
-        $content = Get-Content $pthFile
-        $content = $content -replace '#import site', 'import site'
-        $content | Set-Content $pthFile
-        Add-Content $pthFile "Lib/site-packages"
+        $pthFile = "前置/python-3.12.10-embed-amd64/python312._pth"
+        $pthContent = @"
+python312.zip
+.
+Lib/site-packages
+import site
+"@
+        $pthContent | Set-Content $pthFile -Encoding UTF8
         
-        # 下载 get-pip.py
-        Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "前置/python-3.14.0-embed-amd64/get-pip.py"
+        # 创建目录结构
+        New-Item -ItemType Directory -Force -Path "前置/python-3.12.10-embed-amd64/Lib/site-packages"
+        New-Item -ItemType Directory -Force -Path "前置/python-3.12.10-embed-amd64/Scripts"
         
-        # 安装 pip
-        & "前置/python-3.14.0-embed-amd64/python.exe" "前置/python-3.14.0-embed-amd64/get-pip.py" --no-warn-script-location
+        # 下载并安装 pip
+        Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "前置/python-3.12.10-embed-amd64/get-pip.py"
+        & "前置/python-3.12.10-embed-amd64/python.exe" "前置/python-3.12.10-embed-amd64/get-pip.py" --no-warn-script-location
         
-        # 创建 site-packages 目录
-        New-Item -ItemType Directory -Force -Path "前置/python-3.14.0-embed-amd64/Lib/site-packages"
+        # 验证 pip 安装
+        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip --version
         
-        # 安装 Gradio 和依赖到 site-packages
-        & "前置/python-3.14.0-embed-amd64/python.exe" -m pip install gradio pillow --target "前置/python-3.14.0-embed-amd64/Lib/site-packages" --no-warn-script-location
+        # 安装 Gradio 和依赖（直接安装到 site-packages）
+        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow --no-warn-script-location
         
-        # 清理不需要的文件
-        Remove-Item "前置/python-3.14.0-embed-amd64/get-pip.py" -ErrorAction SilentlyContinue
+        # 验证安装
+        echo "=== Python 环境验证 ==="
+        & "前置/python-3.12.10-embed-amd64/python.exe" --version
+        & "前置/python-3.12.10-embed-amd64/python.exe" -c "import gradio; print(f'Gradio version: {gradio.__version__}')"
+        & "前置/python-3.12.10-embed-amd64/python.exe" -c "import numpy; print(f'NumPy version: {numpy.__version__}')"
+        
+        # 显示 pth 文件内容
+        echo "=== python312._pth 内容 ==="
+        Get-Content $pthFile
     
-    - name: Create Lite package (without Python)
+    - name: Verify source files exist
+      shell: pwsh
+      run: |
+        echo "=== 验证源文件 ==="
+        $requiredFiles = @("AIS.py", "AIS_WebUI.py", "i18n.py", "requirements.txt", "启动.bat")
+        foreach ($file in $requiredFiles) {
+          if (Test-Path $file) {
+            echo "✓ $file exists"
+          } else {
+            echo "✗ $file NOT FOUND!"
+            exit 1
+          }
+        }
+        echo "=== 所有必需文件已确认 ==="
+    
+    - name: Create Lite package
       shell: pwsh
       run: |
         $version = "${{ steps.version.outputs.VERSION }}"
         $packageName = "AIS-$version-Lite"
         
-        # 创建发布目录
         New-Item -ItemType Directory -Force -Path $packageName
         
-        # 复制核心文件
-        Copy-Item "AIS.py" -Destination $packageName
-        Copy-Item "AIS_WebUI.py" -Destination $packageName
-        Copy-Item "i18n.py" -Destination $packageName
-        Copy-Item "requirements.txt" -Destination $packageName
-        Copy-Item "启动.bat" -Destination $packageName
+        # 复制核心文件并验证
+        $coreFiles = @("AIS.py", "AIS_WebUI.py", "i18n.py", "requirements.txt", "启动.bat")
+        foreach ($file in $coreFiles) {
+          Copy-Item $file -Destination $packageName -ErrorAction Stop
+          echo "Copied: $file"
+        }
+        
+        # 复制可选文件
         Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
         Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
         
-        # 复制模型
         Copy-Item -Path "模型" -Destination $packageName -Recurse
         
-        # 创建必要的空目录
         New-Item -ItemType Directory -Force -Path "$packageName/输出"
         New-Item -ItemType Directory -Force -Path "$packageName/数据"
         
-        # 压缩
+        # 验证打包内容
+        echo "=== Lite package contents ==="
+        Get-ChildItem -Path $packageName -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
+        
         Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+        echo "Created: $packageName.zip"
     
-    - name: Create Full package (with Python + Gradio)
+    - name: Create Full package
       shell: pwsh
       run: |
         $version = "${{ steps.version.outputs.VERSION }}"
         $packageName = "AIS-$version-Full"
         
-        # 创建发布目录
         New-Item -ItemType Directory -Force -Path $packageName
         
-        # 复制核心文件
-        Copy-Item "AIS.py" -Destination $packageName
-        Copy-Item "AIS_WebUI.py" -Destination $packageName
-        Copy-Item "i18n.py" -Destination $packageName
-        Copy-Item "requirements.txt" -Destination $packageName
-        Copy-Item "启动.bat" -Destination $packageName
+        # 复制核心文件并验证
+        $coreFiles = @("AIS.py", "AIS_WebUI.py", "i18n.py", "requirements.txt", "启动.bat")
+        foreach ($file in $coreFiles) {
+          Copy-Item $file -Destination $packageName -ErrorAction Stop
+          echo "Copied: $file"
+        }
+        
+        # 复制可选文件
         Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
         Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
         
-        # 复制模型和前置（包含Python和Gradio）
         Copy-Item -Path "模型" -Destination $packageName -Recurse
         Copy-Item -Path "前置" -Destination $packageName -Recurse
         
-        # 创建必要的空目录
         New-Item -ItemType Directory -Force -Path "$packageName/输出"
         New-Item -ItemType Directory -Force -Path "$packageName/数据"
         
-        # 压缩
+        # 验证打包内容
+        echo "=== Full package contents ==="
+        Get-ChildItem -Path $packageName -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
+        
+        # 确认 i18n.py 存在
+        if (-not (Test-Path "$packageName/i18n.py")) {
+          echo "ERROR: i18n.py not found in package!"
+          exit 1
+        }
+        
         Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+        echo "Created: $packageName.zip"
+    
+    - name: List and verify zip files
+      shell: pwsh
+      run: |
+        $version = "${{ steps.version.outputs.VERSION }}"
+        echo "=== 验证打包文件 ==="
+        Get-ChildItem -Path "." -Filter "*.zip" | ForEach-Object { 
+          Write-Host "$($_.Name) - $([math]::Round($_.Length / 1MB, 2)) MB"
+        }
+        
+        $fullZip = "AIS-$version-Full.zip"
+        $liteZip = "AIS-$version-Lite.zip"
+        
+        if (-not (Test-Path $fullZip)) {
+          Write-Error "Full package not found: $fullZip"
+          exit 1
+        }
+        if (-not (Test-Path $liteZip)) {
+          Write-Error "Lite package not found: $liteZip"
+          exit 1
+        }
+        
+        echo "Both packages verified successfully!"
     
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         name: AIS ${{ steps.version.outputs.VERSION }}
         tag_name: ${{ steps.version.outputs.VERSION }}
@@ -193,10 +294,8 @@ jobs:
           ### ⚠️ 系统要求
           - Windows 10/11 x64
           - 支持 Vulkan 的显卡 (NVIDIA/AMD/Intel)
-          - 完整版约 500MB，精简版约 100MB
           
           ### 🌐 语言支持
-          - 简体中文
-          - English
+          - 简体中文 / English
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
