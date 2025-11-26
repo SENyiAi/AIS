@@ -2077,25 +2077,35 @@ if __name__ == "__main__":
     
     # 启动应用
     try:
-        # launch返回 (app, local_url, share_url)
         log_info("正在启动Gradio服务...")
+        # 使用 prevent_thread_lock=True 以便获取返回值
         result = app.launch(
             server_name="127.0.0.1",
             server_port=7860,
             share=share_enabled,
             inbrowser=False,
-            prevent_thread_lock=False,
-            quiet=True  # 禁用Gradio广告信息
+            prevent_thread_lock=True,
+            quiet=True
         )
         
         # 如果启用了share, 尝试获取并保存公开链接
-        # result是元组: (app, local_url, share_url)
-        if share_enabled and isinstance(result, tuple) and len(result) >= 3:
-            share_url = result[2]
+        if share_enabled and result is not None:
+            # result 可能是元组 (app, local_url, share_url) 或直接是 app
+            share_url = None
+            if isinstance(result, tuple) and len(result) >= 3:
+                share_url = result[2]
+            elif hasattr(app, 'share_url'):
+                share_url = app.share_url
+            
             if share_url:
                 save_share_url_to_file(share_url)
                 log_info(f"公开链接: {share_url}")
                 print(f"\n[公开链接] {share_url}\n")
+        
+        # 保持运行直到用户中断
+        import time
+        while True:
+            time.sleep(1)
             
     except KeyboardInterrupt:
         print("\n[停止] 服务已关闭")
