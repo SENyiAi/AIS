@@ -112,13 +112,7 @@ jobs:
         
         # 修改 pth 文件以支持 site-packages
         $pthFile = "前置/python-3.12.10-embed-amd64/python312._pth"
-        $pthContent = @"
-python312.zip
-.
-Lib/site-packages
-import site
-"@
-        $pthContent | Set-Content $pthFile -Encoding UTF8
+        Set-Content -Path $pthFile -Value "python312.zip`n.`nLib/site-packages`nimport site" -Encoding UTF8
         
         # 创建目录结构
         New-Item -ItemType Directory -Force -Path "前置/python-3.12.10-embed-amd64/Lib/site-packages"
