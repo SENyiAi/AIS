@@ -7,11 +7,6 @@ from datetime import datetime
 
 # 基础路径配置
 BASE_DIR = Path(__file__).parent.absolute()
-
-# 确保程序根目录在 sys.path 中（用于导入 i18n 等本地模块）
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
 PREREQ_DIR = BASE_DIR / "前置"
 MODEL_DIR = BASE_DIR / "模型"
 OUTPUT_DIR = BASE_DIR / "输出"
