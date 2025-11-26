@@ -31,7 +31,7 @@ def _load_config() -> Dict[str, Any]:
         try:
             content = CONFIG_FILE.read_text(encoding='utf-8')
             return json.loads(content)
-        except Exception:
+        except (IOError, OSError, json.JSONDecodeError):
             pass
     return {}
 
@@ -42,7 +42,7 @@ def _save_config(config: Dict[str, Any]) -> bool:
         content = json.dumps(config, ensure_ascii=False, indent=2)
         CONFIG_FILE.write_text(content, encoding='utf-8')
         return True
-    except Exception:
+    except (IOError, OSError, TypeError):
         return False
 
 
