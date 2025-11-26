@@ -1,0 +1,57 @@
+# ============================================================
+# AIS - Git Ignore Configuration
+# ============================================================
+
+# 输出文件夹
+输出/
+
+# 数据文件夹 (配置文件、日志、预设)
+数据/
+
+# Gradio 缓存
+.gradio/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+share_url.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 前置依赖 (用户需自行下载)
+前置/
+
+# 模型文件 (用户需自行下载)
+模型/
