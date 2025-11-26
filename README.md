@@ -18,8 +18,8 @@
 <div align="center">
   <table>
     <tr>
-      <td><img src="https://github.com/user-attachments/assets/f4ddfd86-9ef6-426c-b8ff-2b1906c0989b" width="300" alt="界面预览1" /></td>
-      <td><img src="https://github.com/user-attachments/assets/b24ddf12-7cc3-4c7c-82aa-386b998ed269" width="300" alt="界面预览2" /></td>
+      <td><img src="https://github.com/user-attachments/assets/f4ddfd86-9ef6-426c-b8ff-2b1906c0989b" width="300" alt="界面预览" /></td>
+      <td><img src="https://github.com/user-attachments/assets/b24ddf12-7cc3-4c7c-82aa-386b998ed269" width="300" alt="噪点去除" /></td>
     </tr>
   </table>
 </div>
