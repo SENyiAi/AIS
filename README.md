@@ -24,7 +24,7 @@
 
 | 版本 | 说明 | 适用场景 |
 |------|------|----------|
-| **Full (完整版)** | 内置 Python 3.12 + Gradio，开箱即用 | 推荐大多数用户 |
+| **Full (完整版)** | 内置 Python 3.14 + Gradio，开箱即用 | 推荐大多数用户 |
 | **Lite (精简版)** | 仅包含核心文件，需自行安装 Python | 已有 Python 环境的用户 |
 
 **完整版使用步骤：**
@@ -126,3 +126,4 @@ A one-stop AI image super-resolution tool integrating multiple top-tier upscalin
 ### License
 
 MIT License
+
