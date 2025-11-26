@@ -5,35 +5,44 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog
 from pathlib import Path
+from typing import Tuple, List, Optional
 
 BASE_DIR = Path(__file__).parent.absolute()
+MODEL_DIR = BASE_DIR / "模型"
 OUTPUT_DIR = BASE_DIR / "输出"
 
 if not OUTPUT_DIR.exists():
     OUTPUT_DIR.mkdir()
 
-CUGAN_DIR = BASE_DIR / "realcugan-ncnn-vulkan-20220728-windows"
+# 引擎路径配置 (与 WebUI 一致)
+CUGAN_DIR = MODEL_DIR / "realcugan-ncnn-vulkan-20220728-windows"
 CUGAN_EXE = CUGAN_DIR / "realcugan-ncnn-vulkan.exe"
 CUGAN_MODEL_SE = CUGAN_DIR / "models-se"
 CUGAN_MODEL_PRO = CUGAN_DIR / "models-pro"
 
-ESRGAN_DIR = BASE_DIR / "realesrgan-ncnn-vulkan-20220424-windows"
+ESRGAN_DIR = MODEL_DIR / "realesrgan-ncnn-vulkan-20220424-windows"
 ESRGAN_EXE = ESRGAN_DIR / "realesrgan-ncnn-vulkan.exe"
 ESRGAN_MODEL = ESRGAN_DIR / "models"
 
-WAIFU_DIR = BASE_DIR / "waifu2x-ncnn-vulkan-20250915-windows"
+WAIFU_DIR = MODEL_DIR / "waifu2x-ncnn-vulkan-20250915-windows"
 WAIFU_EXE = WAIFU_DIR / "waifu2x-ncnn-vulkan.exe"
 WAIFU_MODEL = WAIFU_DIR / "models-cunet"
 
-def clean_path(user_input):
+def clean_path(user_input: str) -> Path:
+    """清理用户输入的路径"""
     return Path(user_input.strip().strip('"').strip("'"))
 
-def run_cmd(cmd, cwd):
+def run_cmd(cmd: List[str], cwd: Path) -> bool:
+    """执行命令"""
     try:
-        subprocess.run(cmd, check=True, cwd=cwd)
+        subprocess.run(cmd, check=True, cwd=cwd, capture_output=True)
         return True
-    except subprocess.CalledProcessError:
-        print(f"\n[错误] 执行失败")
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
+        print(f"\n[错误] 执行失败: {error_msg[:200]}")
+        return False
+    except FileNotFoundError:
+        print("\n[错误] 引擎可执行文件未找到")
         return False
 
 def get_unique_output_path(filename):

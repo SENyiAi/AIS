@@ -90,8 +90,8 @@ def setup_logging():
     if LOG_FILE.exists():
         try:
             LOG_FILE.unlink()
-        except:
-            pass
+        except (OSError, PermissionError):
+            pass  # 文件可能被占用，忽略
     
     logger = logging.getLogger('AIS')
     logger.setLevel(logging.INFO)
@@ -219,32 +219,36 @@ def get_unique_path(filename: str) -> Path:
 
 def write_ais_metadata(image_path: Path, metadata: Dict[str, Any]) -> bool:
     """将AIS元数据写入PNG图片"""
+    # 仅对 PNG 格式写入元数据
+    if image_path.suffix.lower() != '.png':
+        return True  # 非 PNG 格式跳过，不视为失败
+    
     try:
-        img = Image.open(image_path)
-        pnginfo = PngInfo()
-        
-        # 构建AIS元数据字符串
-        ais_data = {
-            "AIS": "AI Image Super-Resolution",
-            "version": "1.0",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            **metadata
-        }
-        
-        # 写入元数据
-        pnginfo.add_text("AIS", json.dumps(ais_data, ensure_ascii=False))
-        pnginfo.add_text("AIS_Engine", metadata.get("engine", "unknown"))
-        pnginfo.add_text("AIS_Scale", str(metadata.get("scale", 0)))
-        if "denoise" in metadata:
-            pnginfo.add_text("AIS_Denoise", str(metadata.get("denoise", 0)))
-        if "model" in metadata:
-            pnginfo.add_text("AIS_Model", metadata.get("model", ""))
-        
-        # 保存带元数据的图片
-        img.save(image_path, pnginfo=pnginfo)
+        with Image.open(image_path) as img:
+            pnginfo = PngInfo()
+            
+            # 构建AIS元数据字符串
+            ais_data = {
+                "AIS": "AI Image Super-Resolution",
+                "version": "1.0",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                **metadata
+            }
+            
+            # 写入元数据
+            pnginfo.add_text("AIS", json.dumps(ais_data, ensure_ascii=False))
+            pnginfo.add_text("AIS_Engine", str(metadata.get("engine", "unknown")))
+            pnginfo.add_text("AIS_Scale", str(metadata.get("scale", 0)))
+            if "denoise" in metadata:
+                pnginfo.add_text("AIS_Denoise", str(metadata.get("denoise", 0)))
+            if "model" in metadata:
+                pnginfo.add_text("AIS_Model", str(metadata.get("model", "")))
+            
+            # 保存带元数据的图片
+            img.save(image_path, pnginfo=pnginfo)
         return True
-    except Exception as e:
-        print(f"[警告] 写入元数据失败: {e}")
+    except (IOError, OSError) as e:
+        log_info(f"写入元数据失败: {e}")
         return False
 
 
@@ -451,6 +455,9 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
         threads: 线程数 (load:proc:save)
         tta_mode: TTA模式
         output_format: 输出格式 (png/jpg/webp)
+    
+    返回:
+        (输出路径, 状态消息) - 成功时输出路径为文件路径，失败时为 None
     """
     if not input_path:
         return None, "[错误] 请先上传图片"
@@ -458,6 +465,13 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
     input_file = Path(input_path)
     if not input_file.exists():
         return None, "[错误] 输入文件不存在"
+    
+    # 验证文件是否为有效图片
+    try:
+        with Image.open(input_file) as img:
+            img.verify()
+    except Exception:
+        return None, "[错误] 无效的图片文件"
     
     engine_status = check_engines()
     if not engine_status.get(engine, False):
@@ -768,12 +782,17 @@ def get_gallery_images() -> List[str]:
     extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
     images = []
     
-    for f in OUTPUT_DIR.iterdir():
-        if f.is_file() and f.suffix.lower() in extensions:
-            images.append(str(f))
+    try:
+        for f in OUTPUT_DIR.iterdir():
+            if f.is_file() and f.suffix.lower() in extensions:
+                images.append(str(f))
+        
+        # 按修改时间倒序排列(最新的在前)
+        images.sort(key=lambda x: Path(x).stat().st_mtime, reverse=True)
+    except (OSError, PermissionError) as e:
+        log_info(f"读取图库失败: {e}")
+        return []
     
-    # 按修改时间倒序排列(最新的在前)
-    images.sort(key=lambda x: Path(x).stat().st_mtime, reverse=True)
     return images
 
 
@@ -820,16 +839,23 @@ def get_image_info(image_path: Optional[str]) -> Tuple[Optional[str], str]:
 
 
 def delete_gallery_image(image_path: Optional[str]) -> Tuple[List[str], str]:
-    """删除图库中的图片"""
+    """删除图库中的图片（仅允许删除输出目录中的文件）"""
     if not image_path:
         return get_gallery_images(), "请先选择要删除的图片"
     
-    path = Path(image_path)
+    path = Path(image_path).resolve()
+    
+    # 安全检查：确保只能删除输出目录中的文件
+    try:
+        path.relative_to(OUTPUT_DIR.resolve())
+    except ValueError:
+        return get_gallery_images(), "[错误] 只能删除输出目录中的文件"
+    
     if path.exists():
         try:
             path.unlink()
             return get_gallery_images(), f"[完成] 已删除: {path.name}"
-        except Exception as e:
+        except (OSError, PermissionError) as e:
             return get_gallery_images(), f"[错误] 删除失败: {e}"
     
     return get_gallery_images(), "图片不存在"
@@ -844,14 +870,14 @@ def refresh_share_url() -> str:
     # 从日志文件读取公开链接
     if LOG_FILE.exists():
         try:
-            content = LOG_FILE.read_text(encoding='utf-8')
             import re
+            content = LOG_FILE.read_text(encoding='utf-8')
             match = re.search(r'https://[a-zA-Z0-9-]+\.gradio\.live', content)
             if match:
                 url = match.group(0)
                 SHARE_URL = url
                 return url
-        except:
+        except (IOError, OSError, UnicodeDecodeError):
             pass
     
     # 尝试从专用文件读取
@@ -2039,12 +2065,15 @@ def print_startup_info(engine_status: Dict[str, bool], share_enabled: bool) -> N
 def save_share_url_to_file(url: str) -> None:
     """将公开链接保存到文件"""
     global SHARE_URL
+    if not url or not url.startswith("https://"):
+        return
+    
     SHARE_URL = url
     share_url_file = BASE_DIR / "share_url.txt"
     try:
         share_url_file.write_text(url, encoding='utf-8')
-    except Exception:
-        pass
+    except (IOError, OSError) as e:
+        log_info(f"保存公开链接失败: {e}")
 
 
 def load_share_url_from_file() -> Optional[str]:
@@ -2053,9 +2082,10 @@ def load_share_url_from_file() -> Optional[str]:
     if share_url_file.exists():
         try:
             url = share_url_file.read_text(encoding='utf-8').strip()
-            if url.startswith("http"):
+            # 验证 URL 格式
+            if url.startswith("https://") and ".gradio.live" in url:
                 return url
-        except Exception:
+        except (IOError, OSError, UnicodeDecodeError):
             pass
     return None
 
