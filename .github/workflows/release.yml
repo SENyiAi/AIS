@@ -1,0 +1,202 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Get version
+      id: version
+      shell: pwsh
+      run: |
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $version = "${{ github.event.inputs.version }}"
+        } else {
+          $version = "${{ github.ref_name }}"
+        }
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "Version: $version"
+    
+    - name: Download Real-CUGAN
+      shell: pwsh
+      run: |
+        $url = "https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-windows.zip"
+        Invoke-WebRequest -Uri $url -OutFile "realcugan.zip"
+        Expand-Archive -Path "realcugan.zip" -DestinationPath "模型/"
+        Remove-Item "realcugan.zip"
+    
+    - name: Download Real-ESRGAN
+      shell: pwsh
+      run: |
+        $url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
+        Invoke-WebRequest -Uri $url -OutFile "realesrgan.zip"
+        Expand-Archive -Path "realesrgan.zip" -DestinationPath "模型/"
+        Remove-Item "realesrgan.zip"
+    
+    - name: Download Waifu2x
+      shell: pwsh
+      run: |
+        $url = "https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20250915/waifu2x-ncnn-vulkan-20250915-windows.zip"
+        Invoke-WebRequest -Uri $url -OutFile "waifu2x.zip"
+        Expand-Archive -Path "waifu2x.zip" -DestinationPath "模型/"
+        Remove-Item "waifu2x.zip"
+    
+    - name: Setup Python for pip
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    
+    - name: Download Python Embed and install Gradio
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path "前置"
+        
+        # 下载 Python 3.14 嵌入版
+        $url = "https://www.python.org/ftp/python/3.14.0/python-3.14.0-embed-amd64.zip"
+        Invoke-WebRequest -Uri $url -OutFile "python-embed.zip"
+        Expand-Archive -Path "python-embed.zip" -DestinationPath "前置/python-3.14.0-embed-amd64"
+        Remove-Item "python-embed.zip"
+        
+        # 修改 pth 文件以支持 site-packages
+        $pthFile = "前置/python-3.14.0-embed-amd64/python314._pth"
+        $content = Get-Content $pthFile
+        $content = $content -replace '#import site', 'import site'
+        $content | Set-Content $pthFile
+        Add-Content $pthFile "Lib/site-packages"
+        
+        # 下载 get-pip.py
+        Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "前置/python-3.14.0-embed-amd64/get-pip.py"
+        
+        # 安装 pip
+        & "前置/python-3.14.0-embed-amd64/python.exe" "前置/python-3.14.0-embed-amd64/get-pip.py" --no-warn-script-location
+        
+        # 创建 site-packages 目录
+        New-Item -ItemType Directory -Force -Path "前置/python-3.14.0-embed-amd64/Lib/site-packages"
+        
+        # 安装 Gradio 和依赖到 site-packages
+        & "前置/python-3.14.0-embed-amd64/python.exe" -m pip install gradio pillow --target "前置/python-3.14.0-embed-amd64/Lib/site-packages" --no-warn-script-location
+        
+        # 清理不需要的文件
+        Remove-Item "前置/python-3.14.0-embed-amd64/get-pip.py" -ErrorAction SilentlyContinue
+    
+    - name: Create Lite package (without Python)
+      shell: pwsh
+      run: |
+        $version = "${{ steps.version.outputs.VERSION }}"
+        $packageName = "AIS-$version-Lite"
+        
+        # 创建发布目录
+        New-Item -ItemType Directory -Force -Path $packageName
+        
+        # 复制核心文件
+        Copy-Item "AIS.py" -Destination $packageName
+        Copy-Item "AIS_WebUI.py" -Destination $packageName
+        Copy-Item "i18n.py" -Destination $packageName
+        Copy-Item "requirements.txt" -Destination $packageName
+        Copy-Item "启动.bat" -Destination $packageName
+        Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
+        Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
+        
+        # 复制模型
+        Copy-Item -Path "模型" -Destination $packageName -Recurse
+        
+        # 创建必要的空目录
+        New-Item -ItemType Directory -Force -Path "$packageName/输出"
+        New-Item -ItemType Directory -Force -Path "$packageName/数据"
+        
+        # 压缩
+        Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+    
+    - name: Create Full package (with Python + Gradio)
+      shell: pwsh
+      run: |
+        $version = "${{ steps.version.outputs.VERSION }}"
+        $packageName = "AIS-$version-Full"
+        
+        # 创建发布目录
+        New-Item -ItemType Directory -Force -Path $packageName
+        
+        # 复制核心文件
+        Copy-Item "AIS.py" -Destination $packageName
+        Copy-Item "AIS_WebUI.py" -Destination $packageName
+        Copy-Item "i18n.py" -Destination $packageName
+        Copy-Item "requirements.txt" -Destination $packageName
+        Copy-Item "启动.bat" -Destination $packageName
+        Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
+        Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
+        
+        # 复制模型和前置（包含Python和Gradio）
+        Copy-Item -Path "模型" -Destination $packageName -Recurse
+        Copy-Item -Path "前置" -Destination $packageName -Recurse
+        
+        # 创建必要的空目录
+        New-Item -ItemType Directory -Force -Path "$packageName/输出"
+        New-Item -ItemType Directory -Force -Path "$packageName/数据"
+        
+        # 压缩
+        Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: AIS ${{ steps.version.outputs.VERSION }}
+        tag_name: ${{ steps.version.outputs.VERSION }}
+        draft: false
+        prerelease: false
+        files: |
+          AIS-${{ steps.version.outputs.VERSION }}-Full.zip
+          AIS-${{ steps.version.outputs.VERSION }}-Lite.zip
+        body: |
+          ## AIS 图像超分辨率工具 ${{ steps.version.outputs.VERSION }}
+          
+          ### 下载版本说明
+          
+          | 版本 | 文件 | 说明 |
+          |------|------|------|
+          | **完整版 (推荐)** | `AIS-${{ steps.version.outputs.VERSION }}-Full.zip` | 内置 Python 3.12 + Gradio，开箱即用 |
+          | **精简版** | `AIS-${{ steps.version.outputs.VERSION }}-Lite.zip` | 需自行安装 Python 3.10+ 和依赖 |
+          
+          ### 包含引擎
+          - **Real-CUGAN** - 动漫图像超分，细节保留出色
+          - **Real-ESRGAN** - 通用图像超分，效果稳定
+          - **Waifu2x** - 经典动漫超分，速度快
+          
+          ---
+          
+          ### 完整版使用方法
+          1. 解压缩到任意目录（路径不要有中文）
+          2. 双击 `启动.bat` 运行
+          3. 浏览器访问 http://127.0.0.1:7860
+          
+          ### 精简版使用方法
+          1. 确保已安装 Python 3.10 或更高版本
+          2. 解压缩到任意目录
+          3. 运行 `pip install -r requirements.txt` 安装依赖
+          4. 双击 `启动.bat` 运行
+          
+          ---
+          
+          ### 系统要求
+          - Windows 10/11 x64
+          - 支持 Vulkan 的显卡 (NVIDIA/AMD/Intel)
+          - 完整版约 500MB，精简版约 100MB
+          
+          ### 语言支持
+          - 简体中文
+          - English
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
