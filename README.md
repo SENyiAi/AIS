@@ -15,7 +15,7 @@
 - 🌍 **多语言**: 支持简体中文和英文
 - ⚡ **GPU 加速**: 基于 Vulkan，支持 NVIDIA/AMD/Intel 显卡
 - 📦 **开箱即用**: 下载即用，无需配置环境
-<img width="1027" height="731" alt="0b932d73b66522b1aec60b814ece722e" src="https://github.com/user-attachments/assets/f4ddfd86-9ef6-426c-b8ff-2b1906c0989b" /> <img width="484" height="377" alt="image" src="https://github.com/user-attachments/assets/c79bbc48-ecd1-4def-9f69-c58323eeb599" />
+<img width="256" height="182" alt="0b932d73b66522b1aec60b814ece722e" src="https://github.com/user-attachments/assets/f4ddfd86-9ef6-426c-b8ff-2b1906c0989b" /> <img width="121" height="97" alt="image" src="https://github.com/user-attachments/assets/c79bbc48-ecd1-4def-9f69-c58323eeb599" />
 
 
 ## 🚀 快速开始
