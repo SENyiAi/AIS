@@ -75,6 +75,7 @@ import io
 import numpy as np
 import tempfile
 import uuid
+import time
 
 # 导入国际化模块
 from i18n import t, get_choices, get_current_lang, set_lang, load_lang_config, LANGUAGES
@@ -142,6 +143,11 @@ def preprocess_image_input(image_input) -> Optional[str]:
     # 如果已经是文件路径字符串
     if isinstance(image_input, str):
         if Path(image_input).exists():
+            # 检查是否为GIF并记录
+            if image_input.lower().endswith('.gif'):
+                log_info(f"[信息] 检测到GIF文件: {Path(image_input).name}")
+                if is_animated_gif(image_input):
+                    log_info(f"[信息] 这是动态GIF，将逐帧处理")
             return image_input
         log_info(f"[警告] 文件不存在: {image_input}")
         return None
@@ -153,6 +159,7 @@ def preprocess_image_input(image_input) -> Optional[str]:
         return None
     
     # 如果是 numpy 数组（剪贴板粘贴可能是这种格式）
+    # 注意：从剪贴板粘贴的GIF会丢失动画信息，只保留第一帧
     if isinstance(image_input, np.ndarray):
         try:
             # 转换为 PIL Image
@@ -171,10 +178,11 @@ def preprocess_image_input(image_input) -> Optional[str]:
                 return None
             
             # 保存到临时文件
-            temp_filename = f"clipboard_{uuid.uuid4().hex[:8]}.png"
+            temp_filename = f"clipboard_{int(time.time() * 1000)}.png"
             temp_path = TEMP_DIR / temp_filename
             pil_image.save(temp_path, format='PNG')
             log_info(f"[信息] 从剪贴板保存图片: {temp_path.name}")
+            log_info(f"[提示] 如需处理动态GIF，请使用文件上传功能")
             return str(temp_path)
         except Exception as e:
             log_info(f"[错误] 处理numpy数组失败: {e}")
@@ -214,7 +222,7 @@ def cleanup_temp_files():
 
 THUMBNAIL_DIR = BASE_DIR / "缩略图"
 THUMBNAIL_DIR.mkdir(exist_ok=True)
-THUMBNAIL_SIZE = (200, 200)  # 缩略图尺寸
+THUMBNAIL_SIZE = (300, 300)  # 缩略图尺寸
 
 
 def get_thumbnail_path(image_path: str) -> Path:
@@ -338,8 +346,182 @@ def is_animated_gif(image_path: str) -> bool:
         return False
 
 
+def extract_gif_frames_ffmpeg(gif_path: str) -> Tuple[List[str], float, Optional[str]]:
+    """使用FFmpeg提取GIF帧（更好的颜色和透明度处理）
+    
+    返回: (帧文件路径列表, 帧率, 错误信息)
+    """
+    try:
+        frames_dir = TEMP_DIR / f"gif_frames_{uuid.uuid4().hex[:8]}"
+        frames_dir.mkdir(exist_ok=True)
+        
+        # 使用ffprobe获取帧率
+        fps = 10.0  # 默认帧率
+        if FFPROBE_EXE.exists():
+            try:
+                probe_cmd = [
+                    str(FFPROBE_EXE),
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_streams",
+                    gif_path
+                ]
+                result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    import json
+                    info = json.loads(result.stdout)
+                    for stream in info.get('streams', []):
+                        if 'r_frame_rate' in stream:
+                            fps_str = stream['r_frame_rate']
+                            if '/' in fps_str:
+                                num, den = fps_str.split('/')
+                                fps = float(num) / float(den) if float(den) != 0 else 10.0
+                            else:
+                                fps = float(fps_str)
+                            break
+            except Exception:
+                pass
+        
+        # 使用FFmpeg提取帧
+        if FFMPEG_EXE.exists():
+            output_pattern = str(frames_dir / "frame_%04d.png")
+            cmd = [
+                str(FFMPEG_EXE),
+                "-i", gif_path,
+                "-vsync", "0",  # 保持原始帧率
+                output_pattern
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            
+            if result.returncode == 0:
+                frame_paths = sorted([str(p) for p in frames_dir.glob("frame_*.png")])
+                if frame_paths:
+                    log_info(f"[FFmpeg] 提取了 {len(frame_paths)} 帧, 帧率: {fps:.2f}fps")
+                    return frame_paths, fps, None
+        
+        # 如果FFmpeg不可用或失败，回退到PIL方法
+        return extract_gif_frames_pil(gif_path)
+    except Exception as e:
+        log_info(f"[FFmpeg] 提取GIF帧失败: {e}, 回退到PIL")
+        return extract_gif_frames_pil(gif_path)
+
+
+def extract_gif_frames_pil(gif_path: str) -> Tuple[List[str], float, Optional[str]]:
+    """使用PIL提取GIF帧（备用方法）
+    
+    正确处理GIF的disposal方法和透明度，确保每帧都是完整的合成图像
+    
+    返回: (帧文件路径列表, 帧率, 错误信息)
+    """
+    try:
+        frames_dir = TEMP_DIR / f"gif_frames_{uuid.uuid4().hex[:8]}"
+        frames_dir.mkdir(exist_ok=True)
+        
+        frame_paths = []
+        total_duration = 0
+        
+        with Image.open(gif_path) as img:
+            n_frames = getattr(img, 'n_frames', 1)
+            
+            # 获取GIF的逻辑屏幕大小
+            size = img.size
+            
+            # 创建画布 - 用于累积帧内容
+            # 背景色：优先使用GIF的背景色，否则使用白色
+            bg_color = img.info.get('background', 0)
+            if img.mode == 'P' and img.palette:
+                try:
+                    palette = img.palette.getdata()[1]
+                    bg_r = palette[bg_color * 3] if bg_color * 3 < len(palette) else 255
+                    bg_g = palette[bg_color * 3 + 1] if bg_color * 3 + 1 < len(palette) else 255
+                    bg_b = palette[bg_color * 3 + 2] if bg_color * 3 + 2 < len(palette) else 255
+                    bg_rgba = (bg_r, bg_g, bg_b, 255)
+                except:
+                    bg_rgba = (255, 255, 255, 255)
+            else:
+                bg_rgba = (255, 255, 255, 255)
+            
+            # 初始画布
+            canvas = Image.new('RGBA', size, bg_rgba)
+            last_disposal = 0
+            last_frame_region = None
+            prev_canvas: Optional[Image.Image] = None  # 用于disposal=3
+            
+            for i in range(n_frames):
+                img.seek(i)
+                
+                # 获取帧持续时间（毫秒）
+                duration = img.info.get('duration', 100)
+                if duration <= 0:
+                    duration = 100
+                total_duration += duration
+                
+                # 获取disposal方法
+                # 0: 不处理, 1: 保留, 2: 恢复到背景色, 3: 恢复到上一帧
+                disposal = img.info.get('disposal', 0)
+                
+                # 获取当前帧的位置信息（用于局部帧）
+                # tile格式: [('gif', (x0, y0, x1, y1), offset, ...)]
+                try:
+                    if hasattr(img, 'tile') and img.tile:
+                        tile = img.tile[0]
+                        if len(tile) > 1:
+                            frame_box = tile[1]  # (x0, y0, x1, y1)
+                        else:
+                            frame_box = (0, 0, size[0], size[1])
+                    else:
+                        frame_box = (0, 0, size[0], size[1])
+                except:
+                    frame_box = (0, 0, size[0], size[1])
+                
+                # 处理上一帧的disposal（在绘制当前帧之前）
+                if i > 0:
+                    if last_disposal == 2 and last_frame_region:
+                        # 恢复到背景色
+                        bg_region = Image.new('RGBA', 
+                            (last_frame_region[2] - last_frame_region[0], 
+                             last_frame_region[3] - last_frame_region[1]), 
+                            bg_rgba)
+                        canvas.paste(bg_region, (last_frame_region[0], last_frame_region[1]))
+                    elif last_disposal == 3 and prev_canvas is not None:
+                        # 恢复到上一帧 - 使用保存的画布副本
+                        canvas = prev_canvas.copy()
+                
+                # 保存当前画布状态（用于disposal=3）
+                current_canvas_backup = canvas.copy()
+                
+                # 转换当前帧为RGBA
+                # 需要保留调色板并正确处理透明度
+                frame_rgba = img.convert('RGBA')
+                
+                # 将当前帧合成到画布上
+                # 使用paste而不是alpha_composite来正确处理透明区域
+                canvas.paste(frame_rgba, mask=frame_rgba.split()[3])
+                
+                # 保存完整合成帧
+                frame_path = frames_dir / f"frame_{i:04d}.png"
+                canvas.save(frame_path, 'PNG')
+                frame_paths.append(str(frame_path))
+                
+                # 保存状态供下一帧使用
+                last_disposal = disposal
+                last_frame_region = frame_box
+                prev_canvas = current_canvas_backup
+        
+        # 计算平均帧率
+        fps = 1000.0 * n_frames / total_duration if total_duration > 0 else 10.0
+        
+        return frame_paths, fps, None
+    except Exception as e:
+        import traceback
+        log_info(f"[GIF] 帧提取错误: {traceback.format_exc()}")
+        return [], 10.0, str(e)
+
+
 def extract_gif_frames(gif_path: str) -> Tuple[List[str], List[int], Optional[str]]:
-    """提取GIF帧
+    """提取GIF帧 - 兼容旧接口
+    
+    正确处理GIF的disposal方法和透明度，确保每帧都是完整的合成图像
     
     返回: (帧文件路径列表, 每帧持续时间列表, 错误信息)
     """
@@ -353,26 +535,180 @@ def extract_gif_frames(gif_path: str) -> Tuple[List[str], List[int], Optional[st
         with Image.open(gif_path) as img:
             n_frames = getattr(img, 'n_frames', 1)
             
+            # 获取GIF的逻辑屏幕大小
+            size = img.size
+            
+            # 获取背景色
+            bg_color = img.info.get('background', 0)
+            if img.mode == 'P' and img.palette:
+                try:
+                    palette = img.palette.getdata()[1]
+                    bg_r = palette[bg_color * 3] if bg_color * 3 < len(palette) else 255
+                    bg_g = palette[bg_color * 3 + 1] if bg_color * 3 + 1 < len(palette) else 255
+                    bg_b = palette[bg_color * 3 + 2] if bg_color * 3 + 2 < len(palette) else 255
+                    bg_rgba = (bg_r, bg_g, bg_b, 255)
+                except:
+                    bg_rgba = (255, 255, 255, 255)
+            else:
+                bg_rgba = (255, 255, 255, 255)
+            
+            # 初始画布
+            canvas = Image.new('RGBA', size, bg_rgba)
+            last_disposal = 0
+            last_frame_region = None
+            prev_canvas: Optional[Image.Image] = None
+            
             for i in range(n_frames):
                 img.seek(i)
                 
                 # 获取帧持续时间（毫秒）
                 duration = img.info.get('duration', 100)
+                if duration <= 0:
+                    duration = 100
                 durations.append(duration)
                 
-                # 转换为RGB并保存
-                frame = img.convert('RGBA')
+                # 获取disposal方法
+                disposal = img.info.get('disposal', 0)
+                
+                # 获取帧位置
+                try:
+                    if hasattr(img, 'tile') and img.tile:
+                        tile = img.tile[0]
+                        if len(tile) > 1:
+                            frame_box = tile[1]
+                        else:
+                            frame_box = (0, 0, size[0], size[1])
+                    else:
+                        frame_box = (0, 0, size[0], size[1])
+                except:
+                    frame_box = (0, 0, size[0], size[1])
+                
+                # 处理上一帧的disposal
+                if i > 0:
+                    if last_disposal == 2 and last_frame_region:
+                        bg_region = Image.new('RGBA', 
+                            (last_frame_region[2] - last_frame_region[0], 
+                             last_frame_region[3] - last_frame_region[1]), 
+                            bg_rgba)
+                        canvas.paste(bg_region, (last_frame_region[0], last_frame_region[1]))
+                    elif last_disposal == 3 and prev_canvas is not None:
+                        canvas = prev_canvas.copy()
+                
+                # 保存画布状态
+                current_canvas_backup = canvas.copy()
+                
+                # 转换当前帧为RGBA
+                frame_rgba = img.convert('RGBA')
+                
+                # 合成到画布
+                canvas.paste(frame_rgba, mask=frame_rgba.split()[3])
+                
+                # 保存完整合成帧
                 frame_path = frames_dir / f"frame_{i:04d}.png"
-                frame.save(frame_path, 'PNG')
+                canvas.save(frame_path, 'PNG')
                 frame_paths.append(str(frame_path))
+                
+                # 更新状态
+                last_disposal = disposal
+                last_frame_region = frame_box
+                prev_canvas = current_canvas_backup
         
         return frame_paths, durations, None
     except Exception as e:
+        import traceback
+        log_info(f"[GIF] 帧提取错误: {traceback.format_exc()}")
         return [], [], str(e)
 
 
+def reassemble_gif_ffmpeg(frame_paths: List[str], fps: float, output_path: str) -> Tuple[bool, str]:
+    """使用FFmpeg重新组装GIF（更好的颜色和压缩）
+    
+    参数:
+        frame_paths: 处理后的帧文件路径列表
+        fps: 帧率
+        output_path: 输出GIF路径
+    
+    返回: (成功标志, 消息)
+    """
+    try:
+        if not frame_paths:
+            return False, "没有帧可组装"
+        
+        if not FFMPEG_EXE.exists():
+            # 回退到PIL方法，需要转换fps为durations
+            duration_ms = int(1000 / fps) if fps > 0 else 100
+            durations = [duration_ms] * len(frame_paths)
+            return reassemble_gif(frame_paths, durations, output_path)
+        
+        # 获取帧目录
+        frames_dir = Path(frame_paths[0]).parent
+        
+        # 使用FFmpeg合成GIF - 两步法获得最佳质量
+        # 先创建全局调色板（从所有帧采样）
+        palette_path = frames_dir / "palette.png"
+        
+        # 生成调色板 - 使用full模式分析所有帧
+        # stats_mode=full: 分析所有帧的颜色获得全局最优调色板
+        palette_cmd = [
+            str(FFMPEG_EXE),
+            "-y",
+            "-framerate", str(fps),
+            "-i", str(frames_dir / "processed_%04d.png"),
+            "-vf", "palettegen=max_colors=256:stats_mode=full:reserve_transparent=0",
+            str(palette_path)
+        ]
+        
+        result = subprocess.run(palette_cmd, capture_output=True, timeout=120)
+        
+        if result.returncode == 0 and palette_path.exists():
+            # 使用调色板生成高质量GIF
+            # sierra2_4a: Sierra-2-4A 抖动算法，比 floyd_steinberg 产生更少的图案
+            # 也可以尝试: sierra2, sierra3, none (无抖动)
+            gif_cmd = [
+                str(FFMPEG_EXE),
+                "-y",
+                "-framerate", str(fps),
+                "-i", str(frames_dir / "processed_%04d.png"),
+                "-i", str(palette_path),
+                "-lavfi", "paletteuse=dither=sierra2_4a:diff_mode=rectangle:new=1",
+                "-loop", "0",
+                output_path
+            ]
+        else:
+            # 直接生成GIF（无调色板优化）
+            gif_cmd = [
+                str(FFMPEG_EXE),
+                "-y",
+                "-framerate", str(fps),
+                "-i", str(frames_dir / "processed_%04d.png"),
+                "-loop", "0",
+                output_path
+            ]
+        
+        result = subprocess.run(gif_cmd, capture_output=True, timeout=180)
+        
+        if result.returncode == 0 and Path(output_path).exists():
+            log_info(f"[FFmpeg] 成功组装 {len(frame_paths)} 帧GIF")
+            return True, f"GIF组装完成: {len(frame_paths)}帧 (FFmpeg)"
+        else:
+            error = result.stderr.decode('utf-8', errors='ignore')[:200]
+            log_info(f"[FFmpeg] GIF组装失败: {error}")
+            # 回退到PIL
+            duration_ms = int(1000 / fps) if fps > 0 else 100
+            durations = [duration_ms] * len(frame_paths)
+            return reassemble_gif(frame_paths, durations, output_path)
+            
+    except Exception as e:
+        log_info(f"[FFmpeg] GIF组装异常: {e}, 回退到PIL")
+        duration_ms = int(1000 / fps) if fps > 0 else 100
+        durations = [duration_ms] * len(frame_paths)
+        return reassemble_gif(frame_paths, durations, output_path)
+
+
 def reassemble_gif(frame_paths: List[str], durations: List[int], output_path: str) -> Tuple[bool, str]:
-    """重新组装GIF
+    """重新组装GIF（PIL方法）
+    
+    使用全局调色板确保所有帧颜色一致，避免色带/色块问题
     
     参数:
         frame_paths: 处理后的帧文件路径列表
@@ -385,14 +721,47 @@ def reassemble_gif(frame_paths: List[str], durations: List[int], output_path: st
         if not frame_paths:
             return False, "没有帧可组装"
         
-        frames = []
+        # 第一步：加载所有帧为RGB
+        rgb_frames = []
         for path in frame_paths:
             if Path(path).exists():
                 frame = Image.open(path).convert('RGBA')
-                frames.append(frame)
+                background = Image.new('RGBA', frame.size, (255, 255, 255, 255))
+                composite = Image.alpha_composite(background, frame)
+                rgb_frames.append(composite.convert('RGB'))
         
-        if not frames:
+        if not rgb_frames:
             return False, "无法加载处理后的帧"
+        
+        # 第二步：创建全局调色板
+        # 方法：将所有帧的像素合并，然后生成一个统一的调色板
+        # 为了效率，我们从采样帧中提取调色板
+        sample_size = min(10, len(rgb_frames))  # 最多采样10帧
+        step = max(1, len(rgb_frames) // sample_size)
+        
+        # 创建一个大图来收集颜色样本
+        sample_width = rgb_frames[0].width
+        sample_height = rgb_frames[0].height
+        
+        # 将采样帧垂直拼接
+        combined_height = sample_height * sample_size
+        combined = Image.new('RGB', (sample_width, combined_height))
+        
+        for i, idx in enumerate(range(0, len(rgb_frames), step)):
+            if i >= sample_size:
+                break
+            combined.paste(rgb_frames[idx], (0, i * sample_height))
+        
+        # 从合并图像生成全局调色板
+        global_palette_img = combined.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+        global_palette = global_palette_img.getpalette()
+        
+        # 第三步：使用全局调色板转换所有帧
+        frames = []
+        for rgb_frame in rgb_frames:
+            # 使用全局调色板量化，启用抖动以减少色带
+            p_frame = rgb_frame.quantize(colors=256, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG, palette=global_palette_img)
+            frames.append(p_frame)
         
         # 确保durations列表长度正确
         while len(durations) < len(frames):
@@ -405,12 +774,147 @@ def reassemble_gif(frame_paths: List[str], durations: List[int], output_path: st
             append_images=frames[1:],
             duration=durations[:len(frames)],
             loop=0,
-            disposal=2
+            disposal=2,
+            optimize=False
         )
         
+        log_info(f"[GIF] 成功组装 {len(frames)} 帧到 {Path(output_path).name}")
         return True, f"GIF组装完成: {len(frames)}帧"
     except Exception as e:
+        log_info(f"[GIF] 组装失败: {e}")
         return False, f"GIF组装失败: {e}"
+
+
+def reassemble_webp(frame_paths: List[str], durations: List[int], output_path: str) -> Tuple[bool, str]:
+    """组装为WebP动图（支持24-bit颜色，无色带问题）
+    
+    参数:
+        frame_paths: 处理后的帧文件路径列表
+        durations: 每帧持续时间（毫秒）
+        output_path: 输出WebP路径
+    
+    返回: (成功标志, 消息)
+    """
+    try:
+        if not frame_paths:
+            return False, "没有帧可组装"
+        
+        frames = []
+        target_size = None
+        
+        for path in frame_paths:
+            if Path(path).exists():
+                # 打开图像
+                frame = Image.open(path)
+                
+                # 确定目标尺寸（使用第一帧的尺寸）
+                if target_size is None:
+                    target_size = frame.size
+                
+                # 转换为RGB模式（WebP动图不需要透明通道，避免闪烁问题）
+                # 如果原图有透明背景，用白色填充
+                if frame.mode == 'RGBA':
+                    # 创建白色背景
+                    background = Image.new('RGB', frame.size, (255, 255, 255))
+                    # 使用 alpha 通道作为 mask 进行合成
+                    background.paste(frame, mask=frame.split()[3])
+                    frame = background
+                elif frame.mode != 'RGB':
+                    frame = frame.convert('RGB')
+                
+                # 确保尺寸一致（防止闪烁）
+                if frame.size != target_size:
+                    frame = frame.resize(target_size, Image.Resampling.LANCZOS)
+                
+                frames.append(frame)
+        
+        if not frames:
+            return False, "无法加载处理后的帧"
+        
+        # 确保durations列表长度正确
+        while len(durations) < len(frames):
+            durations.append(100)
+        
+        # 保存为WebP动图
+        # 使用 RGB 模式，quality=95 提供高质量的有损压缩
+        # 有损压缩在视觉上几乎无损，但避免了无损模式可能的兼容性问题
+        frames[0].save(
+            output_path,
+            format='WEBP',
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations[:len(frames)],
+            loop=0,
+            quality=95, 
+            method=6  
+        )
+        
+        log_info(f"[WebP] 成功组装 {len(frames)} 帧到 {Path(output_path).name}")
+        return True, f"WebP动图组装完成: {len(frames)}帧"
+    except Exception as e:
+        log_info(f"[WebP] 组装失败: {e}")
+        return False, f"WebP组装失败: {e}"
+
+
+def reassemble_webp_ffmpeg(frame_paths: List[str], fps: float, output_path: str, quality: int = 95) -> Tuple[bool, str]:
+    """使用FFmpeg组装WebP动图
+    
+    参数:
+        frame_paths: 处理后的帧文件路径列表
+        fps: 帧率
+        output_path: 输出WebP路径
+        quality: 质量 (0-100, 100为最佳)
+    
+    返回: (成功标志, 消息)
+    """
+    try:
+        if not frame_paths:
+            return False, "没有帧可组装"
+        
+        if not FFMPEG_EXE.exists():
+            # 回退到PIL方法
+            duration_ms = int(1000 / fps) if fps > 0 else 100
+            durations = [duration_ms] * len(frame_paths)
+            return reassemble_webp(frame_paths, durations, output_path)
+        
+        frames_dir = Path(frame_paths[0]).parent
+        
+        # 使用FFmpeg生成高质量WebP动图
+        # -preset picture: 针对静态图片优化
+        # -compression_level 6: 最佳压缩
+        # -quality 95: 高质量
+        cmd = [
+            str(FFMPEG_EXE),
+            "-y",
+            "-framerate", str(fps),
+            "-i", str(frames_dir / "processed_%04d.png"),
+            "-c:v", "libwebp",
+            "-quality", str(quality),
+            "-compression_level", "6",
+            "-preset", "picture",
+            "-loop", "0",
+            "-pix_fmt", "yuv420p",  # 标准像素格式，兼容性好
+            output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=300)
+        
+        if result.returncode == 0 and Path(output_path).exists():
+            log_info(f"[FFmpeg] 成功组装 {len(frame_paths)} 帧WebP动图")
+            return True, f"WebP动图组装完成: {len(frame_paths)}帧 (FFmpeg)"
+        else:
+            error = result.stderr.decode('utf-8', errors='ignore')[:200]
+            log_info(f"[FFmpeg] WebP组装失败: {error}")
+            # 回退到PIL
+            duration_ms = int(1000 / fps) if fps > 0 else 100
+            durations = [duration_ms] * len(frame_paths)
+            return reassemble_webp(frame_paths, durations, output_path)
+            
+    except Exception as e:
+        log_info(f"[FFmpeg] WebP组装异常: {e}")
+        duration_ms = int(1000 / fps) if fps > 0 else 100
+        durations = [duration_ms] * len(frame_paths)
+        return reassemble_webp(frame_paths, durations, output_path)
 
 
 def cleanup_gif_temp(frames_dir: Path):
@@ -450,12 +954,26 @@ ENGINES: Dict[str, Dict[str, Any]] = {
         "dir": MODEL_DIR / "waifu2x-ncnn-vulkan-20250915-windows",
         "exe": "waifu2x-ncnn-vulkan.exe",
         "models_dir": "models-cunet"
+    },
+    "anime4k": {
+        "dir": MODEL_DIR / "Anime4KCPP-CLI-v3.0.0-x64-MSVC",
+        "exe": "ac_cli.exe",
+        "models": [
+            "acnet-gan",       # GAN 增强模型 (默认, 质量更好)
+            "acnet",           # 标准 CNN 模型 (速度更快)
+        ],
+        "processors": ["cpu", "opencl", "cuda"]  # 支持的处理器
     }
 }
 
+# FFmpeg 配置
+FFMPEG_DIR = BASE_DIR / "前置" / "ffmpeg-8.0.1-essentials_build" / "bin"
+FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
+FFPROBE_EXE = FFMPEG_DIR / "ffprobe.exe"
+
 # 预设配置
 # 预设配置 - 使用 key 而非直接文本，便于 i18n
-PRESET_KEYS = ["preset_universal", "preset_repair", "preset_wallpaper", "preset_soft"]
+PRESET_KEYS = ["preset_universal", "preset_repair", "preset_wallpaper", "preset_soft", "preset_anime4k"]
 
 def get_presets() -> Dict[str, Dict[str, Any]]:
     """获取当前语言的预设配置"""
@@ -479,6 +997,11 @@ def get_presets() -> Dict[str, Dict[str, Any]]:
             "engine": "waifu2x",
             "params": {"scale": 2, "denoise": 3},
             "desc": t("preset_soft_desc")
+        },
+        t("preset_anime4k"): {
+            "engine": "anime4k",
+            "params": {"scale": 2, "model_name": "acnet-gan", "processor": "cuda"},
+            "desc": t("preset_anime4k_desc")
         }
     }
 
@@ -503,6 +1026,16 @@ PRESETS: Dict[str, Dict[str, Any]] = {
         "engine": "waifu2x",
         "params": {"scale": 2, "denoise": 3},
         "desc": "Waifu2x 2x 强力降噪, 画面柔和细腻"
+    },
+    "动漫快处理": {
+        "engine": "anime4k",
+        "params": {"scale": 2, "model_name": "acnet-gan", "processor": "cuda"},
+        "desc": "Anime4K 2x 快速处理, 适合动图与视频这类动画帧较多的文件"
+    },
+    "快速超分": {
+        "engine": "anime4k",
+        "params": {"scale": 2, "model_name": "acnet-gan", "processor": "cuda"},
+        "desc": "Anime4K 2x 快速处理, 适合动图与视频这类动画帧较多的文件"
     }
 }
 
@@ -629,10 +1162,13 @@ def run_command(cmd: List[str], cwd: Path) -> Tuple[bool, str, str]:
 
 def check_engines() -> Dict[str, bool]:
     """检查各引擎是否可用"""
-    return {
+    status = {
         name: (config["dir"] / config["exe"]).exists()
         for name, config in ENGINES.items()
     }
+    # 添加FFmpeg状态
+    status["ffmpeg"] = FFMPEG_EXE.exists()
+    return status
 
 
 def build_cugan_command(input_path: Path, output_path: Path, 
@@ -749,6 +1285,30 @@ def build_waifu2x_command(input_path: Path, output_path: Path,
     return cmd, config["dir"]
 
 
+def build_anime4k_command(input_path: Path, output_path: Path,
+                          scale: float = 2.0, model: str = "acnet-gan",
+                          processor: str = "opencl", device: int = 0) -> Tuple[List[str], Path]:
+    """构建 Anime4KCPP 命令
+    
+    参数:
+        scale: 放大倍率 (支持小数，如 1.5, 2, 2.5, 3, 4)
+        model: 模型名称 (acnet/acnet-gan)
+        processor: 处理器类型 (cpu/opencl/cuda)
+        device: 设备索引 (0, 1, 2...)
+    """
+    config = ENGINES["anime4k"]
+    cmd = [
+        str(config["dir"] / config["exe"]),
+        "-i", str(input_path),
+        "-o", str(output_path),
+        "-f", str(scale),          # factor 放大倍率
+        "-m", model,               # 模型
+        "-p", processor,           # 处理器
+        "-d", str(device)          # 设备索引
+    ]
+    return cmd, config["dir"]
+
+
 def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str], str]:
     """处理单张图片
     
@@ -832,6 +1392,19 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
             tta_mode=tta_mode, output_format=output_format
         )
         metadata.update({"scale": scale, "denoise": denoise, "model": model_type, "tta": tta_mode})
+    
+    elif engine == "anime4k":
+        scale = params.get("scale", 2.0)
+        model = params.get("model_name", params.get("model", "acnet-gan"))
+        processor = params.get("processor", "opencl")
+        device = params.get("device", 0)
+        out_name = f"{input_file.stem}_Anime4K_{model}_{scale}x.{output_format}"
+        out_path = get_unique_path(out_name)
+        cmd, cwd = build_anime4k_command(
+            input_file, out_path, scale=scale, model=model,
+            processor=processor, device=device
+        )
+        metadata.update({"scale": scale, "model": model, "processor": processor})
         
     else:
         return None, f"[错误] 未知引擎: {engine}"
@@ -855,7 +1428,8 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
         return None, error_msg
 
 def process_with_preset(input_image, 
-                        preset_name: str) -> Tuple[Optional[str], Optional[Tuple], Optional[str], Optional[str], str]:
+                        preset_name: str,
+                        gif_output_format: str = "gif") -> Tuple[Optional[str], Optional[Tuple], Optional[str], Optional[str], str]:
     """使用预设处理图片（支持内置预设和固定的自定义预设）
     返回: (处理结果, 对比元组, 原图路径, 结果路径, 状态消息)
     """
@@ -878,7 +1452,7 @@ def process_with_preset(input_image,
     
     # 检查是否为GIF，如果是则使用GIF处理
     if is_animated_gif(input_path):
-        output_path, result_msg = process_gif_image(input_path, engine, **params)
+        output_path, result_msg = process_gif_image(input_path, engine, gif_output_format=gif_output_format, **params)
     else:
         output_path, result_msg = process_image(input_path, engine, **params)
     
@@ -1150,22 +1724,36 @@ def get_all_preset_choices() -> List[str]:
     return builtin
 
 
+def get_author_preset_choices() -> List[str]:
+    """获取作者预设列表"""
+    return list(get_presets().keys())
+
+
+def get_user_preset_choices() -> List[str]:
+    """获取用户固定的预设列表"""
+    pinned = get_pinned_presets()
+    custom_presets = load_custom_presets()
+    
+    # 只返回存在的固定预设
+    valid_presets = []
+    for name in pinned:
+        if name in custom_presets:
+            valid_presets.append(name)
+    
+    return valid_presets
+
+
 def get_preset_config(preset_name: str) -> Optional[Dict[str, Any]]:
     """获取预设配置（支持内置和自定义预设）"""
-    # 处理带星号的自定义预设名称
+    # 检查 None 或空字符串
+    if not preset_name:
+        return None
+    
+    # 处理带星号的自定义预设名称（只处理一次）
     if preset_name.startswith("⭐ "):
         preset_name = preset_name[2:]
     
-    # 先检查内置预设
-    builtin = get_presets()
-    if preset_name in builtin:
-        return builtin[preset_name]
-    
-    # 检查旧版内置预设
-    if preset_name in PRESETS:
-        return PRESETS[preset_name]
-    
-    # 检查自定义预设
+    # 先检查自定义预设（用户预设优先）
     custom = load_custom_presets()
     if preset_name in custom:
         preset_data = custom[preset_name]
@@ -1187,6 +1775,15 @@ def get_preset_config(preset_name: str) -> Optional[Dict[str, Any]]:
         else:
             return preset_data
     
+    # 检查内置预设
+    builtin = get_presets()
+    if preset_name in builtin:
+        return builtin[preset_name]
+    
+    # 检查旧版内置预设
+    if preset_name in PRESETS:
+        return PRESETS[preset_name]
+    
     return None
 
 
@@ -1194,8 +1791,16 @@ def get_preset_config(preset_name: str) -> Optional[Dict[str, Any]]:
 # GIF 超分处理
 # ============================================================
 
-def process_gif_image(input_path: str, engine: str, **params) -> Tuple[Optional[str], str]:
+def process_gif_image(input_path: str, engine: str, gif_output_format: str = "gif", **params) -> Tuple[Optional[str], str]:
     """处理GIF图片 - 逐帧超分后重组
+    
+    参数:
+        input_path: 输入GIF路径
+        engine: 超分引擎
+        gif_output_format: 动图输出格式 (gif/webp)
+            - gif: 传统GIF格式，256色限制，兼容性最好
+            - webp: WebP动图，支持24-bit颜色，无色带问题，文件更小
+        **params: 引擎参数
     
     返回: (输出路径, 状态消息)
     """
@@ -1203,18 +1808,22 @@ def process_gif_image(input_path: str, engine: str, **params) -> Tuple[Optional[
         # 不是动态GIF，使用普通处理
         return process_image(input_path, engine, **params)
     
-    log_info(f"[GIF] 开始处理动态GIF: {Path(input_path).name}")
+    log_info(f"[GIF] 开始处理动态GIF: {Path(input_path).name}，输出格式: {gif_output_format.upper()}")
     
-    # 提取帧
+    # 始终使用PIL提取帧（保留每帧精确时间）
     frame_paths, durations, error = extract_gif_frames(input_path)
-    if error:
+    
+    if error or not frame_paths:
         return None, f"[错误] GIF帧提取失败: {error}"
     
     total_frames = len(frame_paths)
-    log_info(f"[GIF] 共 {total_frames} 帧，开始逐帧处理...")
+    log_info(f"[GIF] 共 {total_frames} 帧，每帧时间: {durations[:5]}... ms")
     
     # 获取帧所在目录
     frames_dir = Path(frame_paths[0]).parent
+    # 创建处理后帧的输出目录
+    processed_dir = TEMP_DIR / f"gif_processed_{uuid.uuid4().hex[:8]}"
+    processed_dir.mkdir(exist_ok=True)
     processed_frames = []
     
     try:
@@ -1224,37 +1833,63 @@ def process_gif_image(input_path: str, engine: str, **params) -> Tuple[Optional[
             # 处理单帧
             output_path, msg = process_image(frame_path, engine, **params)
             
-            if output_path:
-                processed_frames.append(output_path)
+            if output_path and Path(output_path).exists():
+                # 将处理后的帧复制到临时目录，保持顺序
+                ordered_frame_path = processed_dir / f"processed_{i:04d}.png"
+                try:
+                    import shutil
+                    shutil.copy2(output_path, ordered_frame_path)
+                    processed_frames.append(str(ordered_frame_path))
+                    # 删除输出目录中的临时帧文件
+                    Path(output_path).unlink()
+                except Exception as e:
+                    log_info(f"[GIF] 帧 {i+1} 复制失败: {e}")
+                    processed_frames.append(frame_path)
             else:
                 # 帧处理失败，使用原帧
                 log_info(f"[GIF] 帧 {i+1} 处理失败，使用原帧")
                 processed_frames.append(frame_path)
         
-        # 重组GIF
+        # 根据输出格式选择组装方法
         input_file = Path(input_path)
-        output_format = params.get("output_format", "gif")
-        out_name = f"{input_file.stem}_{engine.upper()}_animated.gif"
-        out_path = get_unique_path(out_name)
         
-        success, assemble_msg = reassemble_gif(processed_frames, durations, str(out_path))
+        # 计算帧率（用于FFmpeg）
+        avg_duration = sum(durations) / len(durations) if durations else 100
+        fps = 1000.0 / avg_duration if avg_duration > 0 else 10.0
+        
+        if gif_output_format.lower() == "webp":
+            # WebP 动图 - 24-bit 颜色，无色带
+            out_name = f"{input_file.stem}_{engine.upper()}_animated.webp"
+            out_path = get_unique_path(out_name)
+            
+            if FFMPEG_EXE.exists():
+                success, assemble_msg = reassemble_webp_ffmpeg(processed_frames, fps, str(out_path))
+            else:
+                success, assemble_msg = reassemble_webp(processed_frames, durations, str(out_path))
+            
+            format_name = "WebP动图"
+        else:
+            # GIF 格式 - 256色，兼容性好
+            out_name = f"{input_file.stem}_{engine.upper()}_animated.gif"
+            out_path = get_unique_path(out_name)
+            
+            if FFMPEG_EXE.exists():
+                success, assemble_msg = reassemble_gif_ffmpeg(processed_frames, fps, str(out_path))
+            else:
+                success, assemble_msg = reassemble_gif(processed_frames, durations, str(out_path))
+            
+            format_name = "GIF"
         
         if success:
-            log_info(f"[GIF] 处理完成: {out_path.name}")
-            return str(out_path), f"[完成] GIF处理完成，共{total_frames}帧\n保存至: {out_path.name}"
+            log_info(f"[{format_name}] 处理完成: {out_path.name}")
+            return str(out_path), f"[完成] {format_name}处理完成，共{total_frames}帧\n保存至: {out_path.name}"
         else:
             return None, f"[错误] {assemble_msg}"
     
     finally:
         # 清理临时文件
         cleanup_gif_temp(frames_dir)
-        # 清理处理后的帧（它们在输出目录）
-        for p in processed_frames:
-            if p and Path(p).exists() and Path(p).parent == OUTPUT_DIR:
-                try:
-                    Path(p).unlink()
-                except (OSError, PermissionError):
-                    pass
+        cleanup_gif_temp(processed_dir)
 
 
 # ============================================================
@@ -1432,10 +2067,19 @@ def refresh_share_url() -> str:
 def get_engine_status_text() -> str:
     """获取引擎状态文本"""
     engine_status = check_engines()
+    # 引擎显示名称映射
+    display_names = {
+        "cugan": "Real-CUGAN",
+        "esrgan": "Real-ESRGAN", 
+        "waifu2x": "Waifu2x",
+        "anime4k": "Anime4K",
+        "ffmpeg": "FFmpeg"
+    }
     status_list = []
     for name, available in engine_status.items():
-        icon = "[OK]" if available else "[X]"
-        status_list.append(f"{icon} {name.upper()}")
+        icon = "✓" if available else "✗"
+        display_name = display_names.get(name, name.upper())
+        status_list.append(f"{icon} {display_name}")
     return " | ".join(status_list)
 
 
@@ -1668,8 +2312,9 @@ def create_ui() -> gr.Blocks:
         **[GitHub](https://github.com/SENyiAi/AIS)** | {t("app_subtitle")}: {status_text}
         """)
         
-        # 获取预设选项（包含固定的自定义预设）
-        all_preset_choices = get_all_preset_choices()
+        # 获取预设选项（分类显示）
+        author_preset_choices = get_author_preset_choices()
+        user_preset_choices = get_user_preset_choices()
         
         with gr.Tabs():
             # 快速处理标签页
@@ -1685,15 +2330,41 @@ def create_ui() -> gr.Blocks:
                             height=280
                         )
                         
-                        quick_preset = gr.Radio(
-                            choices=all_preset_choices,
-                            value=all_preset_choices[0] if all_preset_choices else None,
-                            label=t("select_preset")
+                        # 作者预设
+                        gr.Markdown(f"**{t('author_presets')}**")
+                        author_preset_radio = gr.Radio(
+                            choices=author_preset_choices,
+                            value=author_preset_choices[0] if author_preset_choices else None,
+                            label=None,
+                            show_label=False
                         )
                         
+                        # 用户预设
+                        gr.Markdown(f"**{t('user_presets')}**")
+                        user_preset_radio = gr.Radio(
+                            choices=user_preset_choices if user_preset_choices else [],
+                            value=None,
+                            label=None,
+                            show_label=False
+                        )
+                        
+                        # 刷新预设列表按钮
+                        refresh_quick_presets_btn = gr.Button("🔄 刷新预设列表", variant="secondary", size="sm")
+                        
+                        # 当前选中预设的描述
                         quick_preset_desc = gr.Markdown(
                             value=f"[{t('msg_info').strip('[]')}] {list(current_presets.values())[0]['desc']}"
                         )
+                        
+                        # 动图输出格式选择
+                        with gr.Accordion(t("gif_output_format"), open=False):
+                            gr.Markdown(t("gif_format_info"))
+                            quick_gif_output_format = gr.Radio(
+                                choices=get_choices("gif_format"),
+                                value="webp",
+                                label=t("gif_output_format"),
+                                show_label=False
+                            )
                         
                         with gr.Row():
                             quick_btn = gr.Button(t("start_process"), variant="primary", scale=2)
@@ -1729,6 +2400,22 @@ def create_ui() -> gr.Blocks:
                                 height=400
                             )
                 
+                # 刷新首页预设列表的函数
+                def refresh_quick_preset_choices():
+                    """刷新首页预设选择列表"""
+                    author_choices = get_author_preset_choices()
+                    user_choices = get_user_preset_choices()
+                    return (
+                        gr.update(choices=author_choices, value=author_choices[0] if author_choices else None),
+                        gr.update(choices=user_choices, value=None)
+                    )
+                
+                refresh_quick_presets_btn.click(
+                    fn=refresh_quick_preset_choices,
+                    inputs=None,
+                    outputs=[author_preset_radio, user_preset_radio]
+                )
+                
                 # 全部预设结果对比 - 增强版
                 with gr.Accordion(t("all_preset_compare"), open=False):
                     gr.Markdown(t("all_preset_desc"))
@@ -1763,8 +2450,13 @@ def create_ui() -> gr.Blocks:
                         type="filepath"
                     )
                 
+                # 当前选中的预设（用于在两个Radio间切换）
+                current_selected_preset = gr.State(value=author_preset_choices[0] if author_preset_choices else None)
+                
                 def update_preset_desc(preset_name: str) -> str:
                     """更新预设描述（支持内置和自定义预设）"""
+                    if not preset_name:
+                        return ""
                     # 先尝试从 get_preset_config 获取
                     preset = get_preset_config(preset_name)
                     if preset:
@@ -1775,15 +2467,39 @@ def create_ui() -> gr.Blocks:
                     preset = presets.get(preset_name, PRESETS.get(preset_name, {}))
                     return f"[{t('msg_info').strip('[]')}] {preset.get('desc', '')}"
                 
-                quick_preset.change(
-                    fn=update_preset_desc,
-                    inputs=[quick_preset],
-                    outputs=[quick_preset_desc]
+                def on_author_preset_change(author_choice, user_choice):
+                    """作者预设选择变化时，清空用户预设选择"""
+                    if author_choice:
+                        return author_choice, update_preset_desc(author_choice), gr.update(value=None)
+                    # 如果 author_choice 为 None（被清空），保持当前用户预设选择
+                    if user_choice:
+                        return user_choice, update_preset_desc(user_choice), gr.update()
+                    return gr.update(), "", gr.update()
+                
+                def on_user_preset_change(user_choice, author_choice):
+                    """用户预设选择变化时，清空作者预设选择"""
+                    if user_choice:
+                        return user_choice, update_preset_desc(user_choice), gr.update(value=None)
+                    # 如果 user_choice 为 None（被清空），保持当前作者预设选择
+                    if author_choice:
+                        return author_choice, update_preset_desc(author_choice), gr.update()
+                    return gr.update(), "", gr.update()
+                
+                author_preset_radio.change(
+                    fn=on_author_preset_change,
+                    inputs=[author_preset_radio, user_preset_radio],
+                    outputs=[current_selected_preset, quick_preset_desc, user_preset_radio]
+                )
+                
+                user_preset_radio.change(
+                    fn=on_user_preset_change,
+                    inputs=[user_preset_radio, author_preset_radio],
+                    outputs=[current_selected_preset, quick_preset_desc, author_preset_radio]
                 )
                 
                 quick_btn.click(
                     fn=process_with_preset,
-                    inputs=[quick_input, quick_preset],
+                    inputs=[quick_input, current_selected_preset, quick_gif_output_format],
                     outputs=[quick_output, quick_compare, zoom_original, zoom_result, quick_status]
                 )
                 
@@ -1848,6 +2564,14 @@ def create_ui() -> gr.Blocks:
                             type="filepath",
                             sources=["upload", "clipboard"],
                             height=220
+                        )
+                        
+                        # 动图输出格式选项
+                        gif_output_format = gr.Radio(
+                            choices=get_choices("gif_format"),
+                            value="webp",
+                            label=t("gif_output_format"),
+                            info=t("gif_output_format_info")
                         )
                         
                         # 使用Tabs切换不同引擎 - 每个引擎独立完整
@@ -1993,6 +2717,41 @@ def create_ui() -> gr.Blocks:
                                     )
                                 
                                 waifu_btn = gr.Button("🚀 " + t("start_process"), variant="primary", elem_classes=["mobile-friendly-btn"])
+                            
+                            # Anime4K 标签页
+                            with gr.Tab("Anime4K", id="anime4k"):
+                                anime4k_model = gr.Dropdown(
+                                    choices=get_choices("anime4k_model"),
+                                    value="acnet-gan",
+                                    label=t("anime4k_model_select"),
+                                    info=t("anime4k_model_info")
+                                )
+                                anime4k_factor = gr.Slider(
+                                    minimum=2, maximum=4, step=1, value=2,
+                                    label=t("anime4k_factor"),
+                                    info=t("anime4k_factor_info")
+                                )
+                                
+                                with gr.Accordion(t("advanced_options"), open=False):
+                                    anime4k_processor = gr.Dropdown(
+                                        choices=get_choices("anime4k_processor"),
+                                        value="cuda",
+                                        label=t("anime4k_processor"),
+                                        info=t("anime4k_processor_info")
+                                    )
+                                    anime4k_device = gr.Number(
+                                        value=0,
+                                        label=t("anime4k_device"),
+                                        info=t("anime4k_device_info"),
+                                        precision=0
+                                    )
+                                    anime4k_format = gr.Radio(
+                                        choices=get_choices("format"),
+                                        value="png",
+                                        label=t("output_format")
+                                    )
+                                
+                                anime4k_btn = gr.Button("🚀 " + t("start_process"), variant="primary", elem_classes=["mobile-friendly-btn"])
                         
                         custom_status = gr.Textbox(label=t("status"), lines=4, interactive=False)
                         
@@ -2039,14 +2798,22 @@ def create_ui() -> gr.Blocks:
                             type="filepath"
                         )
                 
-                # 各引擎处理函数 - 支持完整参数
-                def process_cugan(img, model, scale, denoise, syncgap, tile, tta, gpu, threads, fmt):
+                # 统一处理函数 - 自动检测GIF并分派
+                def process_smart(input_path: str, engine: str, gif_fmt: str = "webp", **params) -> Tuple[Optional[str], str]:
+                    """智能处理函数 - 自动检测GIF并使用相应处理逻辑"""
+                    if is_animated_gif(input_path):
+                        return process_gif_image(input_path, engine, gif_output_format=gif_fmt, **params)
+                    else:
+                        return process_image(input_path, engine, **params)
+                
+                # 各引擎处理函数 - 支持完整参数和GIF
+                def process_cugan(img, gif_fmt, model, scale, denoise, syncgap, tile, tta, gpu, threads, fmt):
                     if img is None:
                         return None, None, "[错误] 请先上传图片"
                     model_key = "Pro" if "Pro" in model else "SE"
                     denoise_map = {"无降噪": -1, "保守降噪": 0, "强力降噪": 3}
-                    output, msg = process_image(
-                        img, "cugan",
+                    output, msg = process_smart(
+                        img, "cugan", gif_fmt,
                         scale=int(scale),
                         denoise=denoise_map.get(denoise, 0),
                         model=model_key,
@@ -2061,11 +2828,11 @@ def create_ui() -> gr.Blocks:
                         return output, (img, output), msg
                     return None, None, msg
                 
-                def process_esrgan(img, model_name, scale, tile, tta, gpu, threads, fmt):
+                def process_esrgan(img, gif_fmt, model_name, scale, tile, tta, gpu, threads, fmt):
                     if img is None:
                         return None, None, "[错误] 请先上传图片"
-                    output, msg = process_image(
-                        img, "esrgan",
+                    output, msg = process_smart(
+                        img, "esrgan", gif_fmt,
                         scale=int(scale),
                         model_name=model_name,
                         tile_size=int(tile),
@@ -2078,11 +2845,11 @@ def create_ui() -> gr.Blocks:
                         return output, (img, output), msg
                     return None, None, msg
                 
-                def process_waifu(img, model_type, scale, denoise, tile, tta, gpu, threads, fmt):
+                def process_waifu(img, gif_fmt, model_type, scale, denoise, tile, tta, gpu, threads, fmt):
                     if img is None:
                         return None, None, "[错误] 请先上传图片"
-                    output, msg = process_image(
-                        img, "waifu2x",
+                    output, msg = process_smart(
+                        img, "waifu2x", gif_fmt,
                         scale=int(scale),
                         denoise=int(denoise),
                         model_type=model_type,
@@ -2096,24 +2863,45 @@ def create_ui() -> gr.Blocks:
                         return output, (img, output), msg
                     return None, None, msg
                 
+                def process_anime4k(img, gif_fmt, model, factor, processor, device, fmt):
+                    if img is None:
+                        return None, None, "[错误] 请先上传图片"
+                    output, msg = process_smart(
+                        img, "anime4k", gif_fmt,
+                        scale=int(factor),
+                        model_name=model,
+                        processor=processor,
+                        device=int(device) if device else 0,
+                        output_format=fmt
+                    )
+                    if output:
+                        return output, (img, output), msg
+                    return None, None, msg
+                
                 cugan_btn.click(
                     fn=process_cugan,
-                    inputs=[custom_input, cugan_model, cugan_scale, cugan_denoise,
+                    inputs=[custom_input, gif_output_format, cugan_model, cugan_scale, cugan_denoise,
                             cugan_syncgap, cugan_tile, cugan_tta, cugan_gpu, cugan_threads, cugan_format],
                     outputs=[custom_output, custom_compare, custom_status]
                 )
                 
                 esrgan_btn.click(
                     fn=process_esrgan,
-                    inputs=[custom_input, esrgan_model, esrgan_scale,
+                    inputs=[custom_input, gif_output_format, esrgan_model, esrgan_scale,
                             esrgan_tile, esrgan_tta, esrgan_gpu, esrgan_threads, esrgan_format],
                     outputs=[custom_output, custom_compare, custom_status]
                 )
                 
                 waifu_btn.click(
                     fn=process_waifu,
-                    inputs=[custom_input, waifu_model, waifu_scale, waifu_denoise,
+                    inputs=[custom_input, gif_output_format, waifu_model, waifu_scale, waifu_denoise,
                             waifu_tile, waifu_tta, waifu_gpu, waifu_threads, waifu_format],
+                    outputs=[custom_output, custom_compare, custom_status]
+                )
+                
+                anime4k_btn.click(
+                    fn=process_anime4k,
+                    inputs=[custom_input, gif_output_format, anime4k_model, anime4k_factor, anime4k_processor, anime4k_device, anime4k_format],
                     outputs=[custom_output, custom_compare, custom_status]
                 )
                 
@@ -2139,6 +2927,9 @@ def create_ui() -> gr.Blocks:
                     """保存当前参数为预设 - 保存所有引擎的全部参数"""
                     if not name or not name.strip():
                         return "预设名称不能为空", gr.update()
+                    
+                    # 统一处理名称
+                    name = name.strip()
                     
                     # 保存所有引擎的完整参数
                     all_params = {
@@ -2175,14 +2966,17 @@ def create_ui() -> gr.Blocks:
                     }
                     
                     presets = load_custom_presets()
-                    presets[name.strip()] = {
+                    presets[name] = {
                         "all_params": all_params,
                         "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
                     
                     if save_custom_presets(presets):
-                        return f"[完成] 预设 '{name}' 已保存", gr.update(choices=get_custom_preset_names(), value=name)
+                        # 返回更新后的下拉框，确保 value 与 choices 中的项匹配
+                        new_choices = get_custom_preset_names()
+                        return f"[完成] 预设 '{name}' 已保存", gr.update(choices=new_choices, value=name)
                     return "[错误] 保存失败", gr.update()
+
                 
                 save_preset_btn.click(
                     fn=save_current_preset_v2,
@@ -2201,9 +2995,14 @@ def create_ui() -> gr.Blocks:
                     if not preset_name:
                         return default_return
                     
+                    # 统一处理名称
+                    preset_name = preset_name.strip() if isinstance(preset_name, str) else preset_name
+                    
                     presets = load_custom_presets()
+                    print(f"[调试] 尝试加载预设: '{preset_name}', 可用预设: {list(presets.keys())}")
+                    
                     if preset_name not in presets:
-                        return [gr.update()] * 18 + ["预设不存在"]
+                        return [gr.update()] * 18 + [f"预设 '{preset_name}' 不存在，可用: {list(presets.keys())}"]
                     
                     preset = presets[preset_name]
                     
@@ -2416,6 +3215,9 @@ def create_ui() -> gr.Blocks:
                             interactive=True
                         )
                         
+                        # 刷新预设列表按钮
+                        refresh_preset_list_btn = gr.Button("🔄 刷新预设列表", variant="secondary", size="sm")
+                        
                         with gr.Row():
                             pin_btn = gr.Button(t("pin_preset"), variant="primary", scale=1)
                             unpin_btn = gr.Button(t("unpin_preset"), variant="secondary", scale=1)
@@ -2433,21 +3235,42 @@ def create_ui() -> gr.Blocks:
                             value=f"**已固定的预设:** {', '.join(pinned_list) if pinned_list else '无'}"
                         )
                 
+                def refresh_preset_dropdown():
+                    """刷新预设下拉列表"""
+                    presets = get_custom_preset_names()
+                    return gr.update(choices=presets, value=presets[0] if presets else None)
+                
+                refresh_preset_list_btn.click(
+                    fn=refresh_preset_dropdown,
+                    inputs=None,
+                    outputs=[preset_to_pin]
+                )
+                
                 def do_pin_preset(name):
                     if not name:
-                        return t("pinned_count").format(count=len(get_pinned_presets())), \
-                               f"**已固定的预设:** {', '.join(get_pinned_presets()) if get_pinned_presets() else '无'}"
+                        pinned = get_pinned_presets()
+                        return f"请先选择预设 (当前已固定 {len(pinned)} 个)", \
+                               f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
+                    
+                    # 去除可能的空格
+                    name = name.strip()
                     success, msg = pin_preset(name)
                     pinned = get_pinned_presets()
-                    return msg, f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
+                    status = f"{msg} (已固定 {len(pinned)} 个)"
+                    return status, f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
                 
                 def do_unpin_preset(name):
                     if not name:
-                        return t("pinned_count").format(count=len(get_pinned_presets())), \
-                               f"**已固定的预设:** {', '.join(get_pinned_presets()) if get_pinned_presets() else '无'}"
+                        pinned = get_pinned_presets()
+                        return f"请先选择预设 (当前已固定 {len(pinned)} 个)", \
+                               f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
+                    
+                    # 去除可能的空格
+                    name = name.strip()
                     success, msg = unpin_preset(name)
                     pinned = get_pinned_presets()
-                    return msg, f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
+                    status = f"{msg} (已固定 {len(pinned)} 个)"
+                    return status, f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
                 
                 pin_btn.click(
                     fn=do_pin_preset,
@@ -2648,6 +3471,54 @@ Waifu2x 是最早的 AI 图像超分辨率工具之一, 最初由 nagadomi 开�
 ### 最佳实践
 - 需要强力降噪时选择 Waifu2x
 - 配合其他工具使用: 先用 Waifu2x 降噪, 再用 CUGAN 放大
+
+---
+
+## Anime4KCPP (Anime4K CNN++)
+
+### 简介
+Anime4KCPP 是基于 Anime4K 算法的 C++ 高性能实现, 由 TianZerL 开发。
+V3 版本使用纯 CNN (卷积神经网络) 算法, 专为动漫图像和视频设计, 
+支持 CPU、OpenCL 和 CUDA 三种加速方式。
+
+### 模型版本
+| 模型 | 特点 | 适用场景 |
+|------|------|----------|
+| **ACNet-GAN** | GAN增强版本, 质量更好 | 追求最佳画质时使用 |
+| **ACNet** | 标准CNN模型, 速度更快 | 批量处理、实时预览 |
+
+### 参数说明
+- **放大倍率**: 2x / 3x / 4x
+- **处理器类型**:
+  - `OpenCL`: 兼容性最好, 支持大多数显卡
+  - `CPU`: 无需显卡, 但速度较慢
+  - `CUDA`: NVIDIA显卡专用, 速度最快
+- **设备索引**: 多显卡时选择具体使用哪张显卡
+
+### 优点
+- **处理速度极快**: 针对实时处理优化, 适合视频和动图
+- **显存占用低**: 可处理大尺寸图片
+- **多平台加速**: 支持OpenCL/CUDA/CPU
+- **动图友好**: 处理GIF等动态图像效果好
+
+### 缺点
+- 相比其他模型细节还原略弱
+- 对复杂纹理处理一般
+- 主要针对动漫风格优化
+
+### 最佳实践
+- GIF动图处理首选 Anime4K
+- 需要快速预览效果时使用
+- 视频帧处理推荐使用
+
+### 与其他引擎对比
+| 特性 | Real-CUGAN | Real-ESRGAN | Waifu2x | Anime4K |
+|------|------------|-------------|---------|---------|
+| 处理速度 | 中 | 慢 | 快 | 极快 |
+| 显存占用 | 中 | 高 | 低 | 极低 |
+| 细节还原 | 优 | 优 | 良 | 良 |
+| 动图支持 | 一般 | 一般 | 一般 | 优秀 |
+| 降噪能力 | 有 | 有 | 强 | 无 |
                         """)
                     
                     with gr.Tab("预设说明"):
@@ -2733,6 +3604,28 @@ Waifu2x 是最早的 AI 图像超分辨率工具之一, 最初由 nagadomi 开�
 
 ---
 
+### 快速超分
+| 项目 | 设置 |
+|------|------|
+| 引擎 | Anime4K |
+| 放大倍率 | 2x |
+| 模型 | ACNet-GAN |
+| 处理器 | CUDA |
+
+**适用场景**:
+- GIF 动图超分辨率
+- 视频帧批量处理
+- 需要快速预览效果
+- 动画帧较多的文件
+
+**效果特点**:
+- 处理速度极快
+- 显存占用极低
+- 动画帧处理稳定
+- 适合实时预览
+
+---
+
 ## 如何选择?
 
 ```
@@ -2740,7 +3633,11 @@ Waifu2x 是最早的 AI 图像超分辨率工具之一, 最初由 nagadomi 开�
     |
     +-- 很差 (模糊/压缩) --> 烂图修复
     |
-    +-- 一般 --> 通用增强
+    +-- 一般 --> 是动图/视频帧吗?
+                    |
+                    +-- 是 --> 快速超分
+                    |
+                    +-- 否 --> 通用增强
     |
     +-- 很好 --> 想要什么效果?
                     |
