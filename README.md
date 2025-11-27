@@ -10,12 +10,14 @@
 
 ## ✨ 特性
 
--  **多引擎支持**: Real-CUGAN、Real-ESRGAN、Waifu2x
+-  **多引擎支持**: Real-CUGAN、Real-ESRGAN、Waifu2x、Anime4KCPP
 -  **Web 界面**: 基于 Gradio 的现代化界面
+-  **GIF/WebP 动图**: 支持动态图超分，输出 GIF 或 WebP 格式
 -  **多语言**: 支持简体中文和英文
 -  **GPU 加速**: 基于 Vulkan，支持 NVIDIA/AMD/Intel 显卡
 -  **开箱即用**: 下载即用，无需配置环境
--  **实时预览**: WEBUI内提供滑动条预览前后差异
+-  **实时预览**: WebUI 内提供滑动条预览前后差异
+-  **自定义预设**: 保存常用参数组合，一键调用
 <div align="center">
   <img src="https://github.com/user-attachments/assets/a39b3aee-86ba-43a2-aa26-0ed6acfd83a3" height="200" alt="界面预览" />
   <img src="https://github.com/user-attachments/assets/b24ddf12-7cc3-4c7c-82aa-386b998ed269" height="200" alt="噪点去除" />
@@ -70,6 +72,17 @@ python AIS_WebUI.py
 | **Real-CUGAN** | 专为动漫设计，细节保留出色 | 动漫截图、插画 |
 | **Real-ESRGAN** | 通用性强，效果稳定 | 照片、混合内容 |
 | **Waifu2x** | 经典算法，速度快 | 快速预览、批量处理 |
+| **Anime4KCPP** | 极速处理，支持小数倍率 | 视频、GIF 动图 |
+
+## 🎬 动图超分
+
+支持 GIF 动图超分辨率处理：
+
+- **输入**: GIF 动态图
+- **输出格式**: 
+  - **WebP** (推荐): 24-bit 真彩色，无色带，文件更小
+  - **GIF**: 256 色限制，兼容性最好
+- **处理方式**: 逐帧超分后重组，可选 FFmpeg 合成
 
 ## 🛠️ 高级参数
 
@@ -87,11 +100,15 @@ python AIS_WebUI.py
 AIS/
 ├── AIS_WebUI.py      # WebUI 主程序
 ├── AIS.py            # 命令行版本
-├── i18n.py           # i18n模块
+├── i18n.py           # i18n 模块
 ├── 模型/             # 超分引擎
-├── 前置/             # Python 嵌入版
+│   ├── realcugan-ncnn-vulkan-*/
+│   ├── realesrgan-ncnn-vulkan-*/
+│   ├── waifu2x-ncnn-vulkan-*/
+│   └── Anime4KCPP-CLI-*/
+├── 前置/             # Python 嵌入版 + FFmpeg
 ├── 输出/             # 处理结果
-└── 数据/             # 配置和日志
+└── 数据/             # 配置、预设和日志
 ```
 
 ## 📄 许可证
@@ -100,10 +117,12 @@ AIS/
 
 ## 🙏 致谢
 
-- [Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN)
-- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
-- [Waifu2x](https://github.com/nihui/waifu2x-ncnn-vulkan)
-- [Gradio](https://gradio.app/)
+- [Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN) - Bilibili AI Lab
+- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) - Xintao Wang
+- [Waifu2x](https://github.com/nihui/waifu2x-ncnn-vulkan) - nihui
+- [Anime4KCPP](https://github.com/TianZerL/Anime4KCPP) - TianZerL
+- [FFmpeg](https://ffmpeg.org/) - FFmpeg team
+- [Gradio](https://gradio.app/) - Gradio team
 
 ---
 
@@ -115,11 +134,13 @@ A one-stop AI image super-resolution tool integrating multiple top-tier upscalin
 
 ### Features
 
-- 🎨 **Multi-Engine**: Real-CUGAN, Real-ESRGAN, Waifu2x
+- 🎨 **Multi-Engine**: Real-CUGAN, Real-ESRGAN, Waifu2x, Anime4KCPP
 - 🖥️ **Web UI**: Modern Gradio-based interface
+- 🎬 **GIF/WebP Animation**: Super-resolution for animated images
 - 🌍 **i18n**: Chinese and English support
 - ⚡ **GPU Accelerated**: Vulkan-based, supports NVIDIA/AMD/Intel
 - 📦 **Portable**: Download and run, no setup required
+- ⭐ **Custom Presets**: Save and reuse your favorite settings
 
 ### Quick Start
 
