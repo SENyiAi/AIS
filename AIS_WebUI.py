@@ -72,6 +72,9 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 import logging
 import io
+import numpy as np
+import tempfile
+import uuid
 
 # 导入国际化模块
 from i18n import t, get_choices, get_current_lang, set_lang, load_lang_config, LANGUAGES
@@ -119,6 +122,90 @@ logger = setup_logging()
 def log_info(msg: str):
     """记录日志"""
     logger.info(msg)
+
+# 临时文件目录（用于存放剪贴板图片）
+TEMP_DIR = BASE_DIR / "临时"
+TEMP_DIR.mkdir(exist_ok=True)
+
+def preprocess_image_input(image_input) -> Optional[str]:
+    """预处理图片输入，支持多种输入类型
+    
+    参数:
+        image_input: 可以是文件路径(str), PIL.Image, numpy数组, 或None
+    
+    返回:
+        图片文件路径(str)，如果输入无效则返回None
+    """
+    if image_input is None:
+        return None
+    
+    # 如果已经是文件路径字符串
+    if isinstance(image_input, str):
+        if Path(image_input).exists():
+            return image_input
+        log_info(f"[警告] 文件不存在: {image_input}")
+        return None
+    
+    # 如果是 Path 对象
+    if isinstance(image_input, Path):
+        if image_input.exists():
+            return str(image_input)
+        return None
+    
+    # 如果是 numpy 数组（剪贴板粘贴可能是这种格式）
+    if isinstance(image_input, np.ndarray):
+        try:
+            # 转换为 PIL Image
+            if image_input.ndim == 2:
+                # 灰度图
+                pil_image = Image.fromarray(image_input, mode='L')
+            elif image_input.ndim == 3:
+                if image_input.shape[2] == 4:
+                    # RGBA
+                    pil_image = Image.fromarray(image_input, mode='RGBA')
+                else:
+                    # RGB
+                    pil_image = Image.fromarray(image_input, mode='RGB')
+            else:
+                log_info(f"[警告] 不支持的数组维度: {image_input.ndim}")
+                return None
+            
+            # 保存到临时文件
+            temp_filename = f"clipboard_{uuid.uuid4().hex[:8]}.png"
+            temp_path = TEMP_DIR / temp_filename
+            pil_image.save(temp_path, format='PNG')
+            log_info(f"[信息] 从剪贴板保存图片: {temp_path.name}")
+            return str(temp_path)
+        except Exception as e:
+            log_info(f"[错误] 处理numpy数组失败: {e}")
+            return None
+    
+    # 如果是 PIL Image
+    if isinstance(image_input, Image.Image):
+        try:
+            temp_filename = f"clipboard_{uuid.uuid4().hex[:8]}.png"
+            temp_path = TEMP_DIR / temp_filename
+            image_input.save(temp_path, format='PNG')
+            log_info(f"[信息] 从剪贴板保存图片: {temp_path.name}")
+            return str(temp_path)
+        except Exception as e:
+            log_info(f"[错误] 保存PIL图片失败: {e}")
+            return None
+    
+    # 未知类型
+    log_info(f"[警告] 未知的图片输入类型: {type(image_input)}")
+    return None
+
+def cleanup_temp_files():
+    """清理临时文件夹中的旧文件"""
+    try:
+        for temp_file in TEMP_DIR.glob("clipboard_*.png"):
+            try:
+                temp_file.unlink()
+            except (OSError, PermissionError):
+                pass  # 文件可能正在使用
+    except Exception:
+        pass
 
 # 全局状态
 SHARE_URL: Optional[str] = None
@@ -551,12 +638,14 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
             error_msg += f"\n--- 处理日志 ---\n{log[:500]}"
         return None, error_msg
 
-def process_with_preset(input_image: Optional[str], 
+def process_with_preset(input_image, 
                         preset_name: str) -> Tuple[Optional[str], Optional[Tuple], Optional[str], Optional[str], str]:
     """使用预设处理图片
     返回: (处理结果, 对比元组, 原图路径, 结果路径, 状态消息)
     """
-    if input_image is None:
+    # 预处理图片输入（支持剪贴板粘贴）
+    input_path = preprocess_image_input(input_image)
+    if input_path is None:
         return None, None, None, None, "[错误] 请先上传图片"
     
     preset = PRESETS.get(preset_name)
@@ -564,19 +653,21 @@ def process_with_preset(input_image: Optional[str],
         return None, None, None, None, "[错误] 未知预设"
     
     output_path, result_msg = process_image(
-        input_image,
+        input_path,
         preset["engine"],
         **preset["params"]
     )
     
     if output_path:
-        return output_path, (input_image, output_path), input_image, output_path, result_msg
+        return output_path, (input_path, output_path), input_path, output_path, result_msg
     return None, None, None, None, result_msg
 
 
-def process_all_presets(input_image: Optional[str]) -> Tuple[List[Optional[str]], str]:
+def process_all_presets(input_image) -> Tuple[List[Optional[str]], str]:
     """执行所有预设并返回结果"""
-    if input_image is None:
+    # 预处理图片输入（支持剪贴板粘贴）
+    input_path = preprocess_image_input(input_image)
+    if input_path is None:
         return [None] * 4, "[错误] 请先上传图片"
     
     results: List[Optional[str]] = []
@@ -585,7 +676,7 @@ def process_all_presets(input_image: Optional[str]) -> Tuple[List[Optional[str]]
     for preset_name, preset in PRESETS.items():
         messages.append(f"正在执行: {preset_name}")
         output_path, msg = process_image(
-            input_image,
+            input_path,
             preset["engine"],
             **preset["params"]
         )
@@ -604,14 +695,16 @@ def process_all_presets(input_image: Optional[str]) -> Tuple[List[Optional[str]]
     return results, "\n".join(messages)
 
 
-def process_custom(input_image: Optional[str], engine: str, 
+def process_custom(input_image, engine: str, 
                    cugan_model: str, cugan_scale: int, cugan_denoise: str,
                    esrgan_scale: int,
                    waifu_scale: int, waifu_denoise: int) -> Tuple[Optional[str], Optional[Tuple], Optional[str], Optional[str], str]:
     """自定义模式处理
     返回: (处理结果, 对比元组, 原图路径, 结果路径, 状态消息)
     """
-    if input_image is None:
+    # 预处理图片输入（支持剪贴板粘贴）
+    input_path = preprocess_image_input(input_image)
+    if input_path is None:
         return None, None, None, None, "[错误] 请先上传图片"
     
     output: Optional[str] = None
@@ -622,26 +715,26 @@ def process_custom(input_image: Optional[str], engine: str,
         denoise_map = {"无降噪": -1, "保守降噪": 0, "强力降噪": 3}
         denoise = denoise_map.get(cugan_denoise, 0)
         output, msg = process_image(
-            input_image, "cugan", 
+            input_path, "cugan", 
             scale=int(cugan_scale), denoise=denoise, model=model
         )
     
     elif engine == "Real-ESRGAN":
         output, msg = process_image(
-            input_image, "esrgan", 
+            input_path, "esrgan", 
             scale=int(esrgan_scale)
         )
     
     elif engine == "Waifu2x":
         output, msg = process_image(
-            input_image, "waifu2x",
+            input_path, "waifu2x",
             scale=int(waifu_scale), denoise=int(waifu_denoise)
         )
     else:
         return None, None, None, None, "[错误] 请选择引擎"
     
     if output:
-        return output, (input_image, output), input_image, output, msg
+        return output, (input_path, output), input_path, output, msg
     return None, None, None, None, msg
 
 
@@ -904,6 +997,123 @@ def get_engine_status_text() -> str:
     return " | ".join(status_list)
 
 
+# 剪贴板粘贴 JavaScript 代码
+# 使用 head 参数在 launch() 时注入，这是 Gradio 6.0 的正确方式
+CLIPBOARD_PASTE_JS = """
+<script>
+(function() {
+    console.log('[AIS] 剪贴板粘贴脚本开始加载...');
+    
+    function initPasteHandler() {
+        console.log('[AIS] 正在初始化剪贴板粘贴功能...');
+        
+        // 检查是否已经初始化
+        if (window._aisPasteInitialized) {
+            console.log('[AIS] 粘贴功能已初始化，跳过');
+            return;
+        }
+        window._aisPasteInitialized = true;
+        
+        // 监听全局粘贴事件
+        document.addEventListener('paste', async function(e) {
+            console.log('[AIS] 检测到粘贴事件');
+            
+            const items = e.clipboardData?.items;
+            if (!items) {
+                console.log('[AIS] 剪贴板无数据');
+                return;
+            }
+            
+            // 查找图片
+            let imageFile = null;
+            for (const item of items) {
+                if (item.type.startsWith('image/')) {
+                    imageFile = item.getAsFile();
+                    break;
+                }
+            }
+            
+            if (!imageFile) {
+                console.log('[AIS] 剪贴板中没有图片');
+                return;
+            }
+            
+            console.log('[AIS] 检测到剪贴板图片:', imageFile.type, imageFile.size, 'bytes');
+            
+            // 查找所有图片上传的 input 元素
+            const fileInputs = document.querySelectorAll('input[type="file"]');
+            console.log('[AIS] 找到', fileInputs.length, '个文件输入框');
+            
+            // 找到第一个接受图片的、可见的输入框
+            let targetInput = null;
+            for (const input of fileInputs) {
+                const accept = input.getAttribute('accept') || '';
+                if (accept.includes('image') || accept === '*/*' || accept === '') {
+                    // 检查是否可见（父元素没有被隐藏）
+                    const parent = input.closest('[data-testid="image"]') || input.parentElement;
+                    if (parent && parent.offsetParent !== null) {
+                        targetInput = input;
+                        console.log('[AIS] 找到目标输入框');
+                        break;
+                    }
+                }
+            }
+            
+            if (!targetInput && fileInputs.length > 0) {
+                // 使用第一个文件输入
+                targetInput = fileInputs[0];
+                console.log('[AIS] 使用第一个输入框作为备选');
+            }
+            
+            if (!targetInput) {
+                console.log('[AIS] 未找到可用的上传输入框');
+                return;
+            }
+            
+            try {
+                // 创建 DataTransfer 并添加文件
+                const dt = new DataTransfer();
+                const newFile = new File([imageFile], 'clipboard_' + Date.now() + '.png', {type: imageFile.type});
+                dt.items.add(newFile);
+                
+                // 设置到 input
+                targetInput.files = dt.files;
+                
+                // 触发各种可能的事件
+                targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+                targetInput.dispatchEvent(new Event('change', { bubbles: true }));
+                
+                // 显示成功提示
+                const hint = document.createElement('div');
+                hint.style.cssText = 'position:fixed;bottom:20px;right:20px;background:rgba(0,0,0,0.8);color:white;padding:10px 20px;border-radius:8px;z-index:9999;';
+                hint.textContent = '✓ 图片已粘贴';
+                document.body.appendChild(hint);
+                setTimeout(() => hint.remove(), 2000);
+                
+                console.log('[AIS] 图片粘贴成功!');
+                e.preventDefault();
+            } catch (err) {
+                console.error('[AIS] 粘贴失败:', err);
+            }
+        });
+        
+        console.log('[AIS] 剪贴板粘贴功能已启用 - 在页面任意位置按 Ctrl+V 粘贴图片');
+    }
+    
+    // 使用多种方式确保初始化
+    if (document.readyState === 'complete') {
+        initPasteHandler();
+    } else {
+        window.addEventListener('load', initPasteHandler);
+    }
+    
+    // 额外延迟确保 Gradio 组件加载完成
+    setTimeout(initPasteHandler, 2000);
+})();
+</script>
+"""
+
+
 def create_ui() -> gr.Blocks:
     """创建 Gradio 界面"""
     
@@ -915,7 +1125,7 @@ def create_ui() -> gr.Blocks:
     current_presets = get_presets()
     
     with gr.Blocks(title="AIS") as app:
-        # 使用HTML隐藏底栏 + 自定义样式
+        # 使用HTML隐藏底栏 + 自定义样式 (JavaScript 已移至 launch() 的 head 参数)
         gr.HTML("""
         <style>
         footer {display: none !important;}
@@ -1066,17 +1276,22 @@ def create_ui() -> gr.Blocks:
                 
                 def run_all_and_update(input_image):
                     """执行所有预设并返回结果"""
-                    results, msg = process_all_presets(input_image)
+                    # 预处理图片输入（支持剪贴板粘贴）
+                    input_path = preprocess_image_input(input_image)
+                    if input_path is None:
+                        return None, None, None, None, {}, None, "[错误] 请先上传图片"
+                    
+                    results, msg = process_all_presets(input_path)
                     # 构建结果字典用于对比选择
                     results_dict = {
-                        "原图": input_image,
+                        "原图": input_path,
                         "通用增强": results[0],
                         "烂图修复": results[1],
                         "壁纸制作": results[2],
                         "极致柔化": results[3]
                     }
                     # 默认对比: 原图 vs 通用增强
-                    default_compare = (input_image, results[0]) if results[0] else None
+                    default_compare = (input_path, results[0]) if results[0] else None
                     return results[0], results[1], results[2], results[3], results_dict, default_compare, msg
                 
                 quick_all_btn.click(
@@ -2109,13 +2324,15 @@ if __name__ == "__main__":
     try:
         log_info("正在启动Gradio服务...")
         # 使用 prevent_thread_lock=True 以便获取返回值
+        # 使用 head 参数注入剪贴板粘贴 JavaScript (Gradio 6.0 正确方式)
         result = app.launch(
             server_name="127.0.0.1",
             server_port=7860,
             share=share_enabled,
             inbrowser=False,
             prevent_thread_lock=True,
-            quiet=True
+            quiet=True,
+            head=CLIPBOARD_PASTE_JS
         )
         
         # 如果启用了share, 尝试获取并保存公开链接
