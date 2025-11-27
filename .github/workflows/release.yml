@@ -11,6 +11,7 @@ on:
         required: true
         default: 'v1.0.0'
 
+# 添加权限声明解决403错误
 permissions:
   contents: write
 
@@ -113,17 +114,23 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path "前置"
-        $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
-        Invoke-WebRequest -Uri $url -OutFile "ffmpeg.zip"
-        Expand-Archive -Path "ffmpeg.zip" -DestinationPath "temp_ffmpeg"
+        $url = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.0.1-essentials_build.7z"
+        $7zPath = "C:\Program Files\7-Zip\7z.exe"
+        Invoke-WebRequest -Uri $url -OutFile "ffmpeg.7z"
+        # 使用 7-Zip 解压
+        & $7zPath x "ffmpeg.7z" -o"temp_ffmpeg" -y
         # FFmpeg 解压后有一个嵌套目录，需要重命名
         $innerDir = Get-ChildItem -Path "temp_ffmpeg" -Directory | Select-Object -First 1
         if ($innerDir) {
             Move-Item "$($innerDir.FullName)" "前置/ffmpeg-8.0.1-essentials_build" -ErrorAction SilentlyContinue
         }
-        Remove-Item "ffmpeg.zip" -ErrorAction SilentlyContinue
+        Remove-Item "ffmpeg.7z" -ErrorAction SilentlyContinue
         Remove-Item "temp_ffmpeg" -Recurse -ErrorAction SilentlyContinue
+        # 显示下载的 FFmpeg 信息
         echo "FFmpeg downloaded to: 前置/ffmpeg-8.0.1-essentials_build"
+        Get-ChildItem "前置/ffmpeg-8.0.1-essentials_build/bin" -ErrorAction SilentlyContinue | ForEach-Object { 
+          Write-Host "$($_.Name) - $([math]::Round($_.Length / 1MB, 2)) MB" 
+        }
     
     - name: Verify model directories
       shell: pwsh
