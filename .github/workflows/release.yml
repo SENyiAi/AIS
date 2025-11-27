@@ -11,7 +11,6 @@ on:
         required: true
         default: 'v1.0.0'
 
-# 添加权限声明解决403错误
 permissions:
   contents: write
 
@@ -34,6 +33,19 @@ jobs:
         }
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
         echo "Version: $version"
+    
+    - name: Install 7-Zip
+      shell: pwsh
+      run: |
+        # Windows Runner 已预装 7-Zip，验证安装
+        $7zPath = "C:\Program Files\7-Zip\7z.exe"
+        if (Test-Path $7zPath) {
+            echo "7-Zip found at: $7zPath"
+            & $7zPath --help | Select-Object -First 5
+        } else {
+            echo "Installing 7-Zip..."
+            choco install 7zip -y
+        }
     
     - name: Download Real-CUGAN
       shell: pwsh
@@ -78,19 +90,24 @@ jobs:
     - name: Download Anime4KCPP
       shell: pwsh
       run: |
-        $url = "https://github.com/TianZerL/Anime4KCPP/releases/download/v3.0.0/Anime4KCPP-CLI-v3.0.0-x64-MSVC.zip"
-        Invoke-WebRequest -Uri $url -OutFile "anime4k.zip"
-        Expand-Archive -Path "anime4k.zip" -DestinationPath "temp_anime4k"
+        $url = "https://github.com/TianZerL/Anime4KCPP/releases/download/v3.0.0/Anime4KCPP-CLI-v3.0.0-x64-MSVC.7z"
+        Invoke-WebRequest -Uri $url -OutFile "anime4k.7z"
+        # 使用 7-Zip 解压
+        $7zPath = "C:\Program Files\7-Zip\7z.exe"
+        & $7zPath x "anime4k.7z" -o"temp_anime4k" -y
         # 检查解压后的结构
         $innerDir = Get-ChildItem -Path "temp_anime4k" -Directory | Select-Object -First 1
         if ($innerDir) {
             Move-Item "$($innerDir.FullName)" "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC" -ErrorAction SilentlyContinue
         } else {
-            Move-Item "temp_anime4k" "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC" -ErrorAction SilentlyContinue
+            # 如果没有嵌套目录，直接移动
+            New-Item -ItemType Directory -Force -Path "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC"
+            Move-Item "temp_anime4k/*" "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC/" -ErrorAction SilentlyContinue
         }
-        Remove-Item "anime4k.zip" -ErrorAction SilentlyContinue
+        Remove-Item "anime4k.7z" -ErrorAction SilentlyContinue
         Remove-Item "temp_anime4k" -Recurse -ErrorAction SilentlyContinue
         echo "Anime4KCPP downloaded to: 模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC"
+        Get-ChildItem "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC" | ForEach-Object { Write-Host $_.Name }
     
     - name: Download FFmpeg
       shell: pwsh
@@ -198,6 +215,7 @@ jobs:
       run: |
         $version = "${{ steps.version.outputs.VERSION }}"
         $packageName = "AIS-$version-Lite"
+        $7zPath = "C:\Program Files\7-Zip\7z.exe"
         
         New-Item -ItemType Directory -Force -Path $packageName
         
@@ -221,14 +239,16 @@ jobs:
         echo "=== Lite package contents ==="
         Get-ChildItem -Path $packageName -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
         
-        Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
-        echo "Created: $packageName.zip"
+        # 使用 7-Zip 打包 (mx=9 最高压缩率)
+        & $7zPath a -t7z -mx=9 "$packageName.7z" $packageName
+        echo "Created: $packageName.7z"
     
     - name: Create Full package
       shell: pwsh
       run: |
         $version = "${{ steps.version.outputs.VERSION }}"
         $packageName = "AIS-$version-Full"
+        $7zPath = "C:\Program Files\7-Zip\7z.exe"
         
         New-Item -ItemType Directory -Force -Path $packageName
         
@@ -259,27 +279,28 @@ jobs:
           exit 1
         }
         
-        Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
-        echo "Created: $packageName.zip"
+        # 使用 7-Zip 打包 (mx=9 最高压缩率)
+        & $7zPath a -t7z -mx=9 "$packageName.7z" $packageName
+        echo "Created: $packageName.7z"
     
-    - name: List and verify zip files
+    - name: List and verify 7z files
       shell: pwsh
       run: |
         $version = "${{ steps.version.outputs.VERSION }}"
         echo "=== 验证打包文件 ==="
-        Get-ChildItem -Path "." -Filter "*.zip" | ForEach-Object { 
+        Get-ChildItem -Path "." -Filter "*.7z" | ForEach-Object { 
           Write-Host "$($_.Name) - $([math]::Round($_.Length / 1MB, 2)) MB"
         }
         
-        $fullZip = "AIS-$version-Full.zip"
-        $liteZip = "AIS-$version-Lite.zip"
+        $full7z = "AIS-$version-Full.7z"
+        $lite7z = "AIS-$version-Lite.7z"
         
-        if (-not (Test-Path $fullZip)) {
-          Write-Error "Full package not found: $fullZip"
+        if (-not (Test-Path $full7z)) {
+          Write-Error "Full package not found: $full7z"
           exit 1
         }
-        if (-not (Test-Path $liteZip)) {
-          Write-Error "Lite package not found: $liteZip"
+        if (-not (Test-Path $lite7z)) {
+          Write-Error "Lite package not found: $lite7z"
           exit 1
         }
         
@@ -293,8 +314,8 @@ jobs:
         draft: false
         prerelease: false
         files: |
-          AIS-${{ steps.version.outputs.VERSION }}-Full.zip
-          AIS-${{ steps.version.outputs.VERSION }}-Lite.zip
+          AIS-${{ steps.version.outputs.VERSION }}-Full.7z
+          AIS-${{ steps.version.outputs.VERSION }}-Lite.7z
         body: |
           ## AIS 图像超分辨率工具 ${{ steps.version.outputs.VERSION }}
           
@@ -302,8 +323,10 @@ jobs:
           
           | 版本 | 文件 | 说明 |
           |------|------|------|
-          | **完整版 (推荐)** | `AIS-${{ steps.version.outputs.VERSION }}-Full.zip` | 内置 Python 3.12 + Gradio + FFmpeg，开箱即用 |
-          | **精简版** | `AIS-${{ steps.version.outputs.VERSION }}-Lite.zip` | 需自行安装 Python 3.10+ 和依赖 |
+          | **完整版 (推荐)** | `AIS-${{ steps.version.outputs.VERSION }}-Full.7z` | 内置 Python 3.12 + Gradio + FFmpeg，开箱即用 |
+          | **精简版** | `AIS-${{ steps.version.outputs.VERSION }}-Lite.7z` | 需自行安装 Python 3.10+ 和依赖 |
+          
+          > 📌 使用 [7-Zip](https://7-zip.org/) 解压可获得更好的兼容性
           
           ### 🎯 包含引擎
           - **Real-CUGAN** - 动漫图像超分，细节保留出色
