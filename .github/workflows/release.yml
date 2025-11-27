@@ -75,6 +75,39 @@ jobs:
         Remove-Item "waifu2x.zip" -ErrorAction SilentlyContinue
         Remove-Item "temp_waifu2x" -Recurse -ErrorAction SilentlyContinue
     
+    - name: Download Anime4KCPP
+      shell: pwsh
+      run: |
+        $url = "https://github.com/TianZerL/Anime4KCPP/releases/download/v3.0.0/Anime4KCPP-CLI-v3.0.0-x64-MSVC.zip"
+        Invoke-WebRequest -Uri $url -OutFile "anime4k.zip"
+        Expand-Archive -Path "anime4k.zip" -DestinationPath "temp_anime4k"
+        # 检查解压后的结构
+        $innerDir = Get-ChildItem -Path "temp_anime4k" -Directory | Select-Object -First 1
+        if ($innerDir) {
+            Move-Item "$($innerDir.FullName)" "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC" -ErrorAction SilentlyContinue
+        } else {
+            Move-Item "temp_anime4k" "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "anime4k.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_anime4k" -Recurse -ErrorAction SilentlyContinue
+        echo "Anime4KCPP downloaded to: 模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC"
+    
+    - name: Download FFmpeg
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path "前置"
+        $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+        Invoke-WebRequest -Uri $url -OutFile "ffmpeg.zip"
+        Expand-Archive -Path "ffmpeg.zip" -DestinationPath "temp_ffmpeg"
+        # FFmpeg 解压后有一个嵌套目录，需要重命名
+        $innerDir = Get-ChildItem -Path "temp_ffmpeg" -Directory | Select-Object -First 1
+        if ($innerDir) {
+            Move-Item "$($innerDir.FullName)" "前置/ffmpeg-8.0.1-essentials_build" -ErrorAction SilentlyContinue
+        }
+        Remove-Item "ffmpeg.zip" -ErrorAction SilentlyContinue
+        Remove-Item "temp_ffmpeg" -Recurse -ErrorAction SilentlyContinue
+        echo "FFmpeg downloaded to: 前置/ffmpeg-8.0.1-essentials_build"
+    
     - name: Verify model directories
       shell: pwsh
       run: |
@@ -84,14 +117,21 @@ jobs:
         $cugan = Test-Path "模型/realcugan-ncnn-vulkan-20220728-windows/realcugan-ncnn-vulkan.exe"
         $esrgan = Test-Path "模型/realesrgan-ncnn-vulkan-20220424-windows/realesrgan-ncnn-vulkan.exe"
         $waifu2x = Test-Path "模型/waifu2x-ncnn-vulkan-20250915-windows/waifu2x-ncnn-vulkan.exe"
+        $anime4k = Test-Path "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC/ac_cli.exe"
+        $ffmpeg = Test-Path "前置/ffmpeg-8.0.1-essentials_build/bin/ffmpeg.exe"
         
         echo "CUGAN exe exists: $cugan"
         echo "ESRGAN exe exists: $esrgan"
         echo "WAIFU2X exe exists: $waifu2x"
+        echo "ANIME4K exe exists: $anime4k"
+        echo "FFMPEG exe exists: $ffmpeg"
         
-        if (-not ($cugan -and $esrgan -and $waifu2x)) {
-            echo "警告: 部分模型文件未找到"
+        if (-not ($cugan -and $esrgan -and $waifu2x -and $anime4k -and $ffmpeg)) {
+            echo "警告: 部分模型或工具文件未找到"
+            echo "=== 模型目录 ==="
             Get-ChildItem -Path "模型" -Recurse | ForEach-Object { Write-Host $_.FullName }
+            echo "=== 前置目录 ==="
+            Get-ChildItem -Path "前置" -Recurse -Depth 2 | ForEach-Object { Write-Host $_.FullName }
         }
     
     - name: Setup Python
@@ -262,13 +302,17 @@ jobs:
           
           | 版本 | 文件 | 说明 |
           |------|------|------|
-          | **完整版 (推荐)** | `AIS-${{ steps.version.outputs.VERSION }}-Full.zip` | 内置 Python 3.12 + Gradio，开箱即用 |
+          | **完整版 (推荐)** | `AIS-${{ steps.version.outputs.VERSION }}-Full.zip` | 内置 Python 3.12 + Gradio + FFmpeg，开箱即用 |
           | **精简版** | `AIS-${{ steps.version.outputs.VERSION }}-Lite.zip` | 需自行安装 Python 3.10+ 和依赖 |
           
           ### 🎯 包含引擎
           - **Real-CUGAN** - 动漫图像超分，细节保留出色
           - **Real-ESRGAN** - 通用图像超分，效果稳定
           - **Waifu2x** - 经典动漫超分，速度快
+          - **Anime4KCPP** - 快速动漫超分，适合视频和动图
+          
+          ### 🛠️ 内置工具
+          - **FFmpeg** - 用于高质量 GIF/WebP 动图处理
           
           ---
           
