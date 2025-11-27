@@ -207,6 +207,222 @@ def cleanup_temp_files():
     except Exception:
         pass
 
+
+# ============================================================
+# 缩略图系统 - 用于图库显示
+# ============================================================
+
+THUMBNAIL_DIR = BASE_DIR / "缩略图"
+THUMBNAIL_DIR.mkdir(exist_ok=True)
+THUMBNAIL_SIZE = (200, 200)  # 缩略图尺寸
+
+
+def get_thumbnail_path(image_path: str) -> Path:
+    """获取图片对应的缩略图路径"""
+    original = Path(image_path)
+    # 使用原文件名 + 修改时间哈希作为缩略图名，确保更新后重新生成
+    mtime = original.stat().st_mtime if original.exists() else 0
+    thumb_name = f"{original.stem}_{int(mtime)}_thumb.jpg"
+    return THUMBNAIL_DIR / thumb_name
+
+
+def create_thumbnail(image_path: str) -> Optional[str]:
+    """为图片创建缩略图"""
+    try:
+        original = Path(image_path)
+        if not original.exists():
+            return None
+        
+        thumb_path = get_thumbnail_path(image_path)
+        
+        # 如果缩略图已存在且更新，直接返回
+        if thumb_path.exists():
+            return str(thumb_path)
+        
+        # 创建缩略图
+        with Image.open(original) as img:
+            # 处理GIF：只取第一帧
+            if hasattr(img, 'n_frames') and img.n_frames > 1:
+                img.seek(0)
+            
+            # 转换为RGB（处理RGBA等情况）
+            if img.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # 计算缩略图尺寸（保持比例）
+            img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+            
+            # 保存为JPEG（体积小）
+            img.save(thumb_path, 'JPEG', quality=85, optimize=True)
+        
+        return str(thumb_path)
+    except Exception as e:
+        log_info(f"[警告] 创建缩略图失败: {e}")
+        return None
+
+
+def get_gallery_thumbnails() -> List[str]:
+    """获取图库缩略图列表"""
+    if not OUTPUT_DIR.exists():
+        return []
+    
+    extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}
+    thumbnails = []
+    
+    try:
+        images = []
+        for f in OUTPUT_DIR.iterdir():
+            if f.is_file() and f.suffix.lower() in extensions:
+                images.append(str(f))
+        
+        # 按修改时间倒序排列
+        images.sort(key=lambda x: Path(x).stat().st_mtime, reverse=True)
+        
+        # 为每张图片创建/获取缩略图
+        for img_path in images:
+            thumb = create_thumbnail(img_path)
+            if thumb:
+                thumbnails.append(thumb)
+            else:
+                # 缩略图创建失败，使用原图路径（但不推荐）
+                thumbnails.append(img_path)
+    except (OSError, PermissionError) as e:
+        log_info(f"读取图库失败: {e}")
+    
+    return thumbnails
+
+
+def cleanup_old_thumbnails():
+    """清理过期的缩略图"""
+    try:
+        valid_stems = set()
+        for f in OUTPUT_DIR.iterdir():
+            if f.is_file():
+                valid_stems.add(f.stem)
+        
+        for thumb in THUMBNAIL_DIR.glob("*_thumb.jpg"):
+            # 提取原文件名部分
+            parts = thumb.stem.rsplit('_', 2)
+            if len(parts) >= 2:
+                original_stem = parts[0]
+                if original_stem not in valid_stems:
+                    try:
+                        thumb.unlink()
+                    except (OSError, PermissionError):
+                        pass
+    except Exception:
+        pass
+
+
+# ============================================================
+# GIF 处理功能
+# ============================================================
+
+def is_gif(image_path: str) -> bool:
+    """检查图片是否为GIF"""
+    return Path(image_path).suffix.lower() == '.gif'
+
+
+def is_animated_gif(image_path: str) -> bool:
+    """检查是否为动态GIF"""
+    try:
+        with Image.open(image_path) as img:
+            return getattr(img, 'n_frames', 1) > 1
+    except Exception:
+        return False
+
+
+def extract_gif_frames(gif_path: str) -> Tuple[List[str], List[int], Optional[str]]:
+    """提取GIF帧
+    
+    返回: (帧文件路径列表, 每帧持续时间列表, 错误信息)
+    """
+    try:
+        frames_dir = TEMP_DIR / f"gif_frames_{uuid.uuid4().hex[:8]}"
+        frames_dir.mkdir(exist_ok=True)
+        
+        frame_paths = []
+        durations = []
+        
+        with Image.open(gif_path) as img:
+            n_frames = getattr(img, 'n_frames', 1)
+            
+            for i in range(n_frames):
+                img.seek(i)
+                
+                # 获取帧持续时间（毫秒）
+                duration = img.info.get('duration', 100)
+                durations.append(duration)
+                
+                # 转换为RGB并保存
+                frame = img.convert('RGBA')
+                frame_path = frames_dir / f"frame_{i:04d}.png"
+                frame.save(frame_path, 'PNG')
+                frame_paths.append(str(frame_path))
+        
+        return frame_paths, durations, None
+    except Exception as e:
+        return [], [], str(e)
+
+
+def reassemble_gif(frame_paths: List[str], durations: List[int], output_path: str) -> Tuple[bool, str]:
+    """重新组装GIF
+    
+    参数:
+        frame_paths: 处理后的帧文件路径列表
+        durations: 每帧持续时间（毫秒）
+        output_path: 输出GIF路径
+    
+    返回: (成功标志, 消息)
+    """
+    try:
+        if not frame_paths:
+            return False, "没有帧可组装"
+        
+        frames = []
+        for path in frame_paths:
+            if Path(path).exists():
+                frame = Image.open(path).convert('RGBA')
+                frames.append(frame)
+        
+        if not frames:
+            return False, "无法加载处理后的帧"
+        
+        # 确保durations列表长度正确
+        while len(durations) < len(frames):
+            durations.append(100)
+        
+        # 保存为GIF
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations[:len(frames)],
+            loop=0,
+            disposal=2
+        )
+        
+        return True, f"GIF组装完成: {len(frames)}帧"
+    except Exception as e:
+        return False, f"GIF组装失败: {e}"
+
+
+def cleanup_gif_temp(frames_dir: Path):
+    """清理GIF临时文件"""
+    try:
+        import shutil
+        if frames_dir.exists():
+            shutil.rmtree(frames_dir)
+    except Exception:
+        pass
+
+
 # 全局状态
 SHARE_URL: Optional[str] = None
 
@@ -640,7 +856,7 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
 
 def process_with_preset(input_image, 
                         preset_name: str) -> Tuple[Optional[str], Optional[Tuple], Optional[str], Optional[str], str]:
-    """使用预设处理图片
+    """使用预设处理图片（支持内置预设和固定的自定义预设）
     返回: (处理结果, 对比元组, 原图路径, 结果路径, 状态消息)
     """
     # 预处理图片输入（支持剪贴板粘贴）
@@ -648,15 +864,23 @@ def process_with_preset(input_image,
     if input_path is None:
         return None, None, None, None, "[错误] 请先上传图片"
     
-    preset = PRESETS.get(preset_name)
+    # 获取预设配置（支持内置和自定义预设）
+    preset = get_preset_config(preset_name)
     if not preset:
-        return None, None, None, None, "[错误] 未知预设"
+        # 尝试从旧版 PRESETS 获取
+        preset = PRESETS.get(preset_name)
     
-    output_path, result_msg = process_image(
-        input_path,
-        preset["engine"],
-        **preset["params"]
-    )
+    if not preset:
+        return None, None, None, None, f"[错误] 未知预设: {preset_name}"
+    
+    engine = preset.get("engine", "cugan")
+    params = preset.get("params", {})
+    
+    # 检查是否为GIF，如果是则使用GIF处理
+    if is_animated_gif(input_path):
+        output_path, result_msg = process_gif_image(input_path, engine, **params)
+    else:
+        output_path, result_msg = process_image(input_path, engine, **params)
     
     if output_path:
         return output_path, (input_path, output_path), input_path, output_path, result_msg
@@ -864,6 +1088,176 @@ def rename_custom_preset(old_name: str, new_name: str) -> Tuple[bool, str]:
 
 
 # ============================================================
+# 固定预设功能 - 将自定义预设固定到首页
+# ============================================================
+
+def get_pinned_presets() -> List[str]:
+    """获取固定到首页的预设列表"""
+    config = load_config()
+    return config.get("pinned_presets", [])
+
+
+def set_pinned_presets(preset_names: List[str]) -> bool:
+    """设置固定到首页的预设列表"""
+    config = load_config()
+    config["pinned_presets"] = preset_names
+    return save_config(config)
+
+
+def pin_preset(name: str) -> Tuple[bool, str]:
+    """将预设固定到首页"""
+    pinned = get_pinned_presets()
+    if name in pinned:
+        return False, f"预设 '{name}' 已经固定"
+    
+    # 检查预设是否存在
+    presets = load_custom_presets()
+    if name not in presets:
+        return False, f"预设 '{name}' 不存在"
+    
+    pinned.append(name)
+    if set_pinned_presets(pinned):
+        return True, f"[完成] 已将 '{name}' 固定到首页"
+    return False, "[错误] 保存失败"
+
+
+def unpin_preset(name: str) -> Tuple[bool, str]:
+    """取消预设固定"""
+    pinned = get_pinned_presets()
+    if name not in pinned:
+        return False, f"预设 '{name}' 未固定"
+    
+    pinned.remove(name)
+    if set_pinned_presets(pinned):
+        return True, f"[完成] 已取消 '{name}' 的固定"
+    return False, "[错误] 保存失败"
+
+
+def get_all_preset_choices() -> List[str]:
+    """获取所有预设选项（内置预设 + 固定的自定义预设）"""
+    # 内置预设
+    builtin = list(get_presets().keys())
+    
+    # 获取固定的自定义预设
+    pinned = get_pinned_presets()
+    custom_presets = load_custom_presets()
+    
+    # 只添加存在的固定预设
+    for name in pinned:
+        if name in custom_presets and name not in builtin:
+            builtin.append(f"⭐ {name}")  # 用星号标记自定义预设
+    
+    return builtin
+
+
+def get_preset_config(preset_name: str) -> Optional[Dict[str, Any]]:
+    """获取预设配置（支持内置和自定义预设）"""
+    # 处理带星号的自定义预设名称
+    if preset_name.startswith("⭐ "):
+        preset_name = preset_name[2:]
+    
+    # 先检查内置预设
+    builtin = get_presets()
+    if preset_name in builtin:
+        return builtin[preset_name]
+    
+    # 检查旧版内置预设
+    if preset_name in PRESETS:
+        return PRESETS[preset_name]
+    
+    # 检查自定义预设
+    custom = load_custom_presets()
+    if preset_name in custom:
+        preset_data = custom[preset_name]
+        # 转换为内置预设格式
+        if "all_params" in preset_data:
+            # 新格式预设 - 使用默认引擎参数
+            params = preset_data["all_params"]
+            # 使用cugan作为默认
+            cugan_p = params.get("cugan", {})
+            return {
+                "engine": "cugan",
+                "params": {
+                    "scale": cugan_p.get("scale", 2),
+                    "denoise": cugan_p.get("denoise", 0),
+                    "model": cugan_p.get("model", "Pro")
+                },
+                "desc": f"自定义预设: {preset_name}"
+            }
+        else:
+            return preset_data
+    
+    return None
+
+
+# ============================================================
+# GIF 超分处理
+# ============================================================
+
+def process_gif_image(input_path: str, engine: str, **params) -> Tuple[Optional[str], str]:
+    """处理GIF图片 - 逐帧超分后重组
+    
+    返回: (输出路径, 状态消息)
+    """
+    if not is_animated_gif(input_path):
+        # 不是动态GIF，使用普通处理
+        return process_image(input_path, engine, **params)
+    
+    log_info(f"[GIF] 开始处理动态GIF: {Path(input_path).name}")
+    
+    # 提取帧
+    frame_paths, durations, error = extract_gif_frames(input_path)
+    if error:
+        return None, f"[错误] GIF帧提取失败: {error}"
+    
+    total_frames = len(frame_paths)
+    log_info(f"[GIF] 共 {total_frames} 帧，开始逐帧处理...")
+    
+    # 获取帧所在目录
+    frames_dir = Path(frame_paths[0]).parent
+    processed_frames = []
+    
+    try:
+        for i, frame_path in enumerate(frame_paths):
+            log_info(f"[GIF] 处理帧 {i+1}/{total_frames}")
+            
+            # 处理单帧
+            output_path, msg = process_image(frame_path, engine, **params)
+            
+            if output_path:
+                processed_frames.append(output_path)
+            else:
+                # 帧处理失败，使用原帧
+                log_info(f"[GIF] 帧 {i+1} 处理失败，使用原帧")
+                processed_frames.append(frame_path)
+        
+        # 重组GIF
+        input_file = Path(input_path)
+        output_format = params.get("output_format", "gif")
+        out_name = f"{input_file.stem}_{engine.upper()}_animated.gif"
+        out_path = get_unique_path(out_name)
+        
+        success, assemble_msg = reassemble_gif(processed_frames, durations, str(out_path))
+        
+        if success:
+            log_info(f"[GIF] 处理完成: {out_path.name}")
+            return str(out_path), f"[完成] GIF处理完成，共{total_frames}帧\n保存至: {out_path.name}"
+        else:
+            return None, f"[错误] {assemble_msg}"
+    
+    finally:
+        # 清理临时文件
+        cleanup_gif_temp(frames_dir)
+        # 清理处理后的帧（它们在输出目录）
+        for p in processed_frames:
+            if p and Path(p).exists() and Path(p).parent == OUTPUT_DIR:
+                try:
+                    Path(p).unlink()
+                except (OSError, PermissionError):
+                    pass
+
+
+# ============================================================
 # 图库功能
 # ============================================================
 
@@ -872,7 +1266,7 @@ def get_gallery_images() -> List[str]:
     if not OUTPUT_DIR.exists():
         return []
     
-    extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
+    extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}
     images = []
     
     try:
@@ -887,6 +1281,54 @@ def get_gallery_images() -> List[str]:
         return []
     
     return images
+
+
+# 图库索引 - 用于缩略图和原图的映射
+_gallery_image_map: Dict[str, str] = {}
+
+
+def get_gallery_with_thumbnails() -> Tuple[List[str], Dict[str, str]]:
+    """获取图库缩略图列表和映射关系
+    
+    返回: (缩略图路径列表, {缩略图路径: 原图路径} 映射)
+    """
+    global _gallery_image_map
+    _gallery_image_map = {}
+    
+    if not OUTPUT_DIR.exists():
+        return [], {}
+    
+    extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'}
+    thumbnails = []
+    
+    try:
+        images = []
+        for f in OUTPUT_DIR.iterdir():
+            if f.is_file() and f.suffix.lower() in extensions:
+                images.append(str(f))
+        
+        # 按修改时间倒序排列
+        images.sort(key=lambda x: Path(x).stat().st_mtime, reverse=True)
+        
+        # 为每张图片创建缩略图
+        for img_path in images:
+            thumb = create_thumbnail(img_path)
+            if thumb:
+                thumbnails.append(thumb)
+                _gallery_image_map[thumb] = img_path
+            else:
+                # 缩略图创建失败时使用原图
+                thumbnails.append(img_path)
+                _gallery_image_map[img_path] = img_path
+    except (OSError, PermissionError) as e:
+        log_info(f"读取图库失败: {e}")
+    
+    return thumbnails, _gallery_image_map
+
+
+def get_original_from_thumbnail(thumb_path: str) -> str:
+    """根据缩略图路径获取原图路径"""
+    return _gallery_image_map.get(thumb_path, thumb_path)
 
 
 def get_image_info(image_path: Optional[str]) -> Tuple[Optional[str], str]:
@@ -1111,6 +1553,71 @@ CLIPBOARD_PASTE_JS = """
     setTimeout(initPasteHandler, 2000);
 })();
 </script>
+
+<script>
+// 图片加载优化 - 添加懒加载和错误重试
+(function() {
+    console.log('[AIS] 图片加载优化脚本加载中...');
+    
+    function initImageOptimization() {
+        // 为所有图片添加懒加载
+        const images = document.querySelectorAll('img');
+        images.forEach(img => {
+            if (!img.loading) {
+                img.loading = 'lazy';
+            }
+        });
+        
+        // 监听图片加载错误并自动重试
+        document.addEventListener('error', function(e) {
+            if (e.target.tagName === 'IMG') {
+                const img = e.target;
+                const retryCount = parseInt(img.dataset.retryCount || '0');
+                
+                if (retryCount < 3) {
+                    console.log('[AIS] 图片加载失败，重试中...', img.src);
+                    img.dataset.retryCount = retryCount + 1;
+                    
+                    // 延迟重试
+                    setTimeout(() => {
+                        const originalSrc = img.src;
+                        img.src = '';
+                        img.src = originalSrc + (originalSrc.includes('?') ? '&' : '?') + 'retry=' + Date.now();
+                    }, 1000 * (retryCount + 1));
+                }
+            }
+        }, true);
+        
+        console.log('[AIS] 图片加载优化已启用');
+    }
+    
+    // 使用 MutationObserver 监听新添加的图片
+    const observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            mutation.addedNodes.forEach(function(node) {
+                if (node.nodeType === 1) {
+                    const images = node.querySelectorAll ? node.querySelectorAll('img') : [];
+                    images.forEach(img => {
+                        if (!img.loading) {
+                            img.loading = 'lazy';
+                        }
+                    });
+                }
+            });
+        });
+    });
+    
+    if (document.readyState === 'complete') {
+        initImageOptimization();
+        observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+        window.addEventListener('load', function() {
+            initImageOptimization();
+            observer.observe(document.body, { childList: true, subtree: true });
+        });
+    }
+})();
+</script>
 """
 
 
@@ -1147,23 +1654,22 @@ def create_ui() -> gr.Blocks:
             font-size: 16px !important;
             padding: 12px 16px !important;
         }
+        
+        /* 缩略图图库样式 */
+        .thumbnail-gallery img {
+            object-fit: cover !important;
+        }
         </style>
         """)
         
-        # 标题栏 + 语言切换
-        with gr.Row():
-            with gr.Column(scale=4):
-                gr.Markdown(f"""
-                # {t("app_title")}
-                **[GitHub](https://github.com/SENyiAi/AIS)** | {t("app_subtitle")}: {status_text}
-                """)
-            with gr.Column(scale=1, min_width=150):
-                lang_selector = gr.Radio(
-                    choices=["简体中文", "English"],
-                    value="简体中文" if get_current_lang() == "zh-CN" else "English",
-                    label=t("language"),
-                    interactive=True
-                )
+        # 标题栏 (语言设置已移至设置标签页)
+        gr.Markdown(f"""
+        # {t("app_title")}
+        **[GitHub](https://github.com/SENyiAi/AIS)** | {t("app_subtitle")}: {status_text}
+        """)
+        
+        # 获取预设选项（包含固定的自定义预设）
+        all_preset_choices = get_all_preset_choices()
         
         with gr.Tabs():
             # 快速处理标签页
@@ -1180,8 +1686,8 @@ def create_ui() -> gr.Blocks:
                         )
                         
                         quick_preset = gr.Radio(
-                            choices=list(current_presets.keys()),
-                            value=list(current_presets.keys())[0],
+                            choices=all_preset_choices,
+                            value=all_preset_choices[0] if all_preset_choices else None,
                             label=t("select_preset")
                         )
                         
@@ -1258,6 +1764,13 @@ def create_ui() -> gr.Blocks:
                     )
                 
                 def update_preset_desc(preset_name: str) -> str:
+                    """更新预设描述（支持内置和自定义预设）"""
+                    # 先尝试从 get_preset_config 获取
+                    preset = get_preset_config(preset_name)
+                    if preset:
+                        return f"[{t('msg_info').strip('[]')}] {preset.get('desc', '自定义预设')}"
+                    
+                    # 回退到内置预设
                     presets = get_presets()
                     preset = presets.get(preset_name, PRESETS.get(preset_name, {}))
                     return f"[{t('msg_info').strip('[]')}] {preset.get('desc', '')}"
@@ -1763,20 +2276,24 @@ def create_ui() -> gr.Blocks:
             # 图库标签页
             with gr.Tab(t("tab_gallery")):
                 gr.Markdown(f"### {t('gallery_title')}")
-                gr.Markdown(t("gallery_desc"))
+                gr.Markdown(t("gallery_desc") + f" **({t('click_load_original')})**")
+                
+                # 初始化时获取缩略图
+                initial_thumbs, thumb_map = get_gallery_with_thumbnails()
                 
                 with gr.Row():
                     with gr.Column(scale=2):
-                        # 图库组件 - 使用官方推荐配置
+                        # 图库组件 - 使用缩略图显示
                         gallery = gr.Gallery(
                             label=t("image_list"),
-                            value=get_gallery_images(),
+                            value=initial_thumbs,
                             columns=5,
                             rows=3,
                             height="auto",
                             object_fit="cover",
-                            allow_preview=True,
-                            show_label=False
+                            allow_preview=False,  # 禁用内置预览，使用自定义预览
+                            show_label=False,
+                            elem_classes=["thumbnail-gallery"]
                         )
                         
                         with gr.Row():
@@ -1792,10 +2309,11 @@ def create_ui() -> gr.Blocks:
                     
                     with gr.Column(scale=1):
                         gr.Markdown(f"### {t('image_preview')}")
+                        # 点击缩略图后在此加载原图
                         preview_image = gr.Image(
-                            label=t("preview"),
+                            label=t("preview") + f" ({t('click_load_original')})",
                             type="filepath",
-                            height=300,
+                            height=350,
                             interactive=False
                         )
                         
@@ -1807,16 +2325,19 @@ def create_ui() -> gr.Blocks:
                             interactive=False
                         )
                 
-                # 用于存储当前选中的图片路径
+                # 用于存储当前选中的原图路径
                 selected_image_path = gr.State(value=None)
                 
                 def on_gallery_select(evt: gr.SelectData):
-                    """图库选择事件"""
-                    images = get_gallery_images()
-                    if evt.index < len(images):
-                        img_path = images[evt.index]
-                        preview, info = get_image_info(img_path)
-                        return img_path, preview, info
+                    """图库选择事件 - 从缩略图加载原图"""
+                    thumbs, mapping = get_gallery_with_thumbnails()
+                    if evt.index < len(thumbs):
+                        thumb_path = thumbs[evt.index]
+                        # 获取原图路径
+                        original_path = get_original_from_thumbnail(thumb_path)
+                        # 加载原图信息
+                        preview, info = get_image_info(original_path)
+                        return original_path, preview, info
                     return None, None, t("select_show")
                 
                 gallery.select(
@@ -1826,9 +2347,10 @@ def create_ui() -> gr.Blocks:
                 )
                 
                 def refresh_gallery():
-                    """刷新图库"""
-                    images = get_gallery_images()
-                    return images, t("msg_refresh_count").format(count=len(images))
+                    """刷新图库 - 重新生成缩略图"""
+                    cleanup_old_thumbnails()  # 清理旧缩略图
+                    thumbs, _ = get_gallery_with_thumbnails()
+                    return thumbs, t("msg_refresh_count").format(count=len(thumbs))
                 
                 refresh_btn.click(
                     fn=refresh_gallery,
@@ -1839,11 +2361,14 @@ def create_ui() -> gr.Blocks:
                 def delete_selected(img_path):
                     """删除选中的图片"""
                     if not img_path:
-                        images = get_gallery_images()
-                        return images, t("msg_select_delete"), None, None, t("select_show")
+                        thumbs, _ = get_gallery_with_thumbnails()
+                        return thumbs, t("msg_select_delete"), None, None, t("select_show")
                     
+                    # 删除原图
                     images, msg = delete_gallery_image(img_path)
-                    return images, msg, None, None, t("msg_image_deleted")
+                    # 刷新缩略图列表
+                    thumbs, _ = get_gallery_with_thumbnails()
+                    return thumbs, msg, None, None, t("msg_image_deleted")
                 
                 delete_btn.click(
                     fn=delete_selected,
@@ -1853,6 +2378,92 @@ def create_ui() -> gr.Blocks:
             
             # 设置标签页
             with gr.Tab(t("tab_settings")):
+                # === 语言设置 ===
+                gr.Markdown(f"## {t('language_settings')}")
+                gr.Markdown(t("language_desc"))
+                
+                with gr.Row():
+                    lang_selector = gr.Radio(
+                        choices=["简体中文", "English"],
+                        value="简体中文" if get_current_lang() == "zh-CN" else "English",
+                        label=t("language"),
+                        interactive=True
+                    )
+                    lang_save_status = gr.Textbox(
+                        label="",
+                        value="",
+                        interactive=False,
+                        lines=1,
+                        visible=False
+                    )
+                
+                gr.Markdown("---")
+                
+                # === 固定预设设置 ===
+                gr.Markdown(f"## {t('pinned_presets')}")
+                gr.Markdown(t("pinned_presets_desc"))
+                
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        # 可固定的预设列表（自定义预设）
+                        available_presets = get_custom_preset_names()
+                        pinned_list = get_pinned_presets()
+                        
+                        preset_to_pin = gr.Dropdown(
+                            choices=available_presets,
+                            value=available_presets[0] if available_presets else None,
+                            label=t("saved_presets"),
+                            interactive=True
+                        )
+                        
+                        with gr.Row():
+                            pin_btn = gr.Button(t("pin_preset"), variant="primary", scale=1)
+                            unpin_btn = gr.Button(t("unpin_preset"), variant="secondary", scale=1)
+                        
+                        pinned_status = gr.Textbox(
+                            label=t("operation_status"),
+                            value=t("pinned_count").format(count=len(pinned_list)),
+                            interactive=False,
+                            lines=1
+                        )
+                    
+                    with gr.Column(scale=1):
+                        # 显示当前固定的预设
+                        pinned_display = gr.Markdown(
+                            value=f"**已固定的预设:** {', '.join(pinned_list) if pinned_list else '无'}"
+                        )
+                
+                def do_pin_preset(name):
+                    if not name:
+                        return t("pinned_count").format(count=len(get_pinned_presets())), \
+                               f"**已固定的预设:** {', '.join(get_pinned_presets()) if get_pinned_presets() else '无'}"
+                    success, msg = pin_preset(name)
+                    pinned = get_pinned_presets()
+                    return msg, f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
+                
+                def do_unpin_preset(name):
+                    if not name:
+                        return t("pinned_count").format(count=len(get_pinned_presets())), \
+                               f"**已固定的预设:** {', '.join(get_pinned_presets()) if get_pinned_presets() else '无'}"
+                    success, msg = unpin_preset(name)
+                    pinned = get_pinned_presets()
+                    return msg, f"**已固定的预设:** {', '.join(pinned) if pinned else '无'}"
+                
+                pin_btn.click(
+                    fn=do_pin_preset,
+                    inputs=[preset_to_pin],
+                    outputs=[pinned_status, pinned_display]
+                )
+                
+                unpin_btn.click(
+                    fn=do_unpin_preset,
+                    inputs=[preset_to_pin],
+                    outputs=[pinned_status, pinned_display]
+                )
+                
+                gr.Markdown("---")
+                
+                # === 网络分享设置 ===
                 gr.Markdown(f"## {t('network_share')}")
                 gr.Markdown(t("share_desc"))
                 
@@ -2232,18 +2843,18 @@ By SENyiAi | [GitHub](https://github.com/SENyiAi/AIS)
         **提示**: 处理完成后可使用对比滑块查看效果差异 | 输出文件保存在 `输出` 文件夹 | 在图库中可浏览所有输出
         """)
         
-        # 语言切换 - 使用JS强制刷新页面
+        # 语言切换 - 使用JS强制刷新页面 (在设置页定义的 lang_selector)
         def on_language_change(lang_choice):
             """处理语言切换"""
             new_lang = "zh-CN" if lang_choice == "简体中文" else "en"
             set_lang(new_lang)
-            return None
+            return "[已保存] 刷新页面后生效"
         
         lang_selector.change(
             fn=on_language_change,
             inputs=[lang_selector],
-            outputs=None,
-            js="() => { setTimeout(() => { window.location.reload(); }, 300); }"
+            outputs=[lang_save_status],
+            js="() => { setTimeout(() => { window.location.reload(); }, 500); }"
         )
         
         # 页面加载时自动刷新公开链接
