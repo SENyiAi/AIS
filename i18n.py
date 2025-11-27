@@ -119,10 +119,12 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "preset_repair": "烂图修复",
         "preset_wallpaper": "壁纸制作",
         "preset_soft": "极致柔化",
+        "preset_anime4k": "快速超分",
         "preset_universal_desc": "Real-CUGAN Pro 2x 保守降噪, 适合大多数场景",
         "preset_repair_desc": "Real-ESRGAN 4x, 强力修复低质量图片",
         "preset_wallpaper_desc": "Real-CUGAN SE 4x 无降噪, 保留细节制作高清壁纸",
         "preset_soft_desc": "Waifu2x 2x 强力降噪, 画面柔和细腻",
+        "preset_anime4k_desc": "Anime4K 2x 快速处理, 适合动图与视频这类动画帧较多的文件",
         
         # 对比
         "all_preset_compare": "全部预设结果对比",
@@ -149,6 +151,8 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "threads": "线程数 (load:proc:save)",
         "threads_info": "多小图可用4:4:4，大图用2:2:2",
         "output_format": "输出格式",
+        "gif_output_format": "动图输出格式",
+        "gif_output_format_info": "WebP支持24-bit颜色无色带，GIF仅256色但兼容性更好",
         
         # 模型选项
         "model_se": "SE (标准版)",
@@ -175,6 +179,18 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "waifu_photo": "Photo",
         "waifu_denoise_info": "-1=无效果, 0-3=降噪强度递增",
         "waifu_scale_info": "支持1/2/4/8/16/32",
+        
+        # Anime4K 模型
+        "anime4k_model_select": "模型选择",
+        "anime4k_model_info": "acnet-gan效果更好，acnet速度更快",
+        "anime4k_acnet": "ACNet (快速)",
+        "anime4k_acnet_gan": "ACNet-GAN (高质量)",
+        "anime4k_processor": "处理器类型",
+        "anime4k_processor_info": "OpenCL兼容性最好，CUDA需要NVIDIA显卡",
+        "anime4k_device": "设备索引",
+        "anime4k_device_info": "一般设为0即可，多显卡时可选择",
+        "anime4k_scale_info": "支持小数倍率如1.5, 2.5",
+        "anime4k_not_installed": "Anime4K 未安装，请下载 Anime4KCPP 并放入模型文件夹",
         
         # 结果
         "process_result": "处理结果",
@@ -248,6 +264,34 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "help_faq": "常见问题",
         "help_about": "关于",
         
+        # 语言设置（新增到设置中）
+        "language_settings": "语言设置",
+        "language_desc": "切换界面语言，保存后刷新页面生效。",
+        
+        # 固定预设
+        "pinned_presets": "固定预设",
+        "pinned_presets_desc": "选择要固定在首页「选择预设」中的自定义预设。",
+        "pinned_count": "已固定 {count} 个预设",
+        "pin_preset": "固定到首页",
+        "unpin_preset": "取消固定",
+        
+        # 预设分类
+        "author_presets": "系统预设",
+        "user_presets": "用户预设",
+        "no_user_presets": "暂无用户预设，请在「自定义处理」中保存预设后在「设置」中固定",
+        
+        # GIF处理
+        "gif_processing": "正在处理GIF...",
+        "gif_frame": "帧 {current}/{total}",
+        "gif_done": "GIF处理完成，共{count}帧",
+        "gif_error": "GIF处理失败: {error}",
+        "gif_compare_note": "注意：GIF动画在滑动对比中可能不同步，请点击下方展开查看原图和结果",
+        
+        # 图库缩略图
+        "loading_thumbnail": "加载缩略图...",
+        "click_load_original": "原图",
+        "thumbnail_size": "缩略图大小",
+        
         # 消息
         "msg_error": "[错误]",
         "msg_success": "[完成]",
@@ -278,6 +322,10 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "_choices": {
             "gpu": [("自动", -2), ("CPU", -1), ("GPU 0", 0), ("GPU 1", 1)],
             "format": ["png", "jpg", "webp"],
+            "gif_format": [
+                ("WebP (无色带, 推荐)", "webp"),
+                ("GIF (256色, 兼容性好)", "gif")
+            ],
             "cugan_model": ["SE (标准版)", "Pro (专业版)"],
             "cugan_denoise": ["无降噪", "保守降噪", "强力降噪"],
             "esrgan_model": [
@@ -291,7 +339,16 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
                 ("Anime Style Art RGB", "upconv_7_anime_style_art_rgb"),
                 ("Photo", "upconv_7_photo")
             ],
-            "compare_sources": ["原图", "通用增强", "烂图修复", "壁纸制作", "极致柔化"],
+            "anime4k_model": [
+                ("ACNet-GAN (质量最佳)", "acnet-gan"),
+                ("ACNet (标准)", "acnet")
+            ],
+            "anime4k_processor": [
+                ("CUDA (NVIDIA显卡)", "cuda"),
+                ("OpenCL (通用)", "opencl"),
+                ("CPU", "cpu")
+            ],
+            "compare_sources": ["原图", "通用增强", "烂图修复", "壁纸制作", "极致柔化", "快速超分"],
         }
     },
     
@@ -332,10 +389,12 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "preset_repair": "Image Repair",
         "preset_wallpaper": "Wallpaper Maker",
         "preset_soft": "Ultra Soft",
+        "preset_anime4k": "Fast Upscale",
         "preset_universal_desc": "Real-CUGAN Pro 2x conservative denoise, suitable for most scenarios",
         "preset_repair_desc": "Real-ESRGAN 4x, powerful repair for low-quality images",
         "preset_wallpaper_desc": "Real-CUGAN SE 4x no denoise, preserve details for HD wallpapers",
         "preset_soft_desc": "Waifu2x 2x strong denoise, soft and delicate output",
+        "preset_anime4k_desc": "Anime4K 2x fast processing, ideal for animations and videos with many frames",
         
         # Comparison
         "all_preset_compare": "All Presets Comparison",
@@ -362,6 +421,8 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "threads": "Threads (load:proc:save)",
         "threads_info": "Use 4:4:4 for small images, 2:2:2 for large",
         "output_format": "Output Format",
+        "gif_output_format": "Animation Output Format",
+        "gif_output_format_info": "WebP supports 24-bit color with no banding, GIF has 256 colors but better compatibility",
         
         # Model Options
         "model_se": "SE (Standard)",
@@ -388,6 +449,18 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "waifu_photo": "Photo",
         "waifu_denoise_info": "-1=no effect, 0-3=increasing strength",
         "waifu_scale_info": "Supports 1/2/4/8/16/32",
+        
+        # Anime4K Models
+        "anime4k_model_select": "Model Select",
+        "anime4k_model_info": "acnet-gan for quality, acnet for speed",
+        "anime4k_acnet": "ACNet (Fast)",
+        "anime4k_acnet_gan": "ACNet-GAN (High Quality)",
+        "anime4k_processor": "Processor Type",
+        "anime4k_processor_info": "OpenCL has best compatibility, CUDA requires NVIDIA GPU",
+        "anime4k_device": "Device Index",
+        "anime4k_device_info": "Usually 0, select for multi-GPU",
+        "anime4k_scale_info": "Supports decimal scales like 1.5, 2.5",
+        "anime4k_not_installed": "Anime4K not installed, please download Anime4KCPP and place in models folder",
         
         # Results
         "process_result": "Process Result",
@@ -461,6 +534,34 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "help_faq": "FAQ",
         "help_about": "About",
         
+        # Language Settings (added to settings)
+        "language_settings": "Language Settings",
+        "language_desc": "Switch interface language. Refresh page after saving.",
+        
+        # Pinned Presets
+        "pinned_presets": "Pinned Presets",
+        "pinned_presets_desc": "Select custom presets to pin to homepage 'Select Preset'.",
+        "pinned_count": "{count} presets pinned",
+        "pin_preset": "Pin to Homepage",
+        "unpin_preset": "Unpin",
+        
+        # Preset Categories
+        "author_presets": "System Presets",
+        "user_presets": "User Presets",
+        "no_user_presets": "No user presets yet. Save presets in 'Custom Process' and pin them in 'Settings'",
+        
+        # GIF Processing
+        "gif_processing": "Processing GIF...",
+        "gif_frame": "Frame {current}/{total}",
+        "gif_done": "GIF done, {count} frames total",
+        "gif_error": "GIF processing failed: {error}",
+        "gif_compare_note": "Note: GIF animations may not sync in slider comparison. Click below to view original and result separately.",
+        
+        # Gallery Thumbnail
+        "loading_thumbnail": "Loading thumbnail...",
+        "click_load_original": "Click to load original",
+        "thumbnail_size": "Thumbnail Size",
+        
         # Messages
         "msg_error": "[Error]",
         "msg_success": "[Done]",
@@ -491,6 +592,10 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "_choices": {
             "gpu": [("Auto", -2), ("CPU", -1), ("GPU 0", 0), ("GPU 1", 1)],
             "format": ["png", "jpg", "webp"],
+            "gif_format": [
+                ("WebP (No Banding, Recommended)", "webp"),
+                ("GIF (256 Colors, Compatible)", "gif")
+            ],
             "cugan_model": ["SE (Standard)", "Pro (Professional)"],
             "cugan_denoise": ["No Denoise", "Conservative", "Strong"],
             "esrgan_model": [
@@ -504,7 +609,16 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
                 ("Anime Style Art RGB", "upconv_7_anime_style_art_rgb"),
                 ("Photo", "upconv_7_photo")
             ],
-            "compare_sources": ["Original", "Universal Enhance", "Image Repair", "Wallpaper Maker", "Ultra Soft"],
+            "anime4k_model": [
+                ("ACNet-GAN (Best Quality)", "acnet-gan"),
+                ("ACNet (Standard)", "acnet")
+            ],
+            "anime4k_processor": [
+                ("CUDA (NVIDIA GPU)", "cuda"),
+                ("OpenCL (Universal)", "opencl"),
+                ("CPU", "cpu")
+            ],
+            "compare_sources": ["Original", "Universal Enhance", "Image Repair", "Wallpaper Maker", "Ultra Soft", "Fast Upscale"],
         }
     }
 }
