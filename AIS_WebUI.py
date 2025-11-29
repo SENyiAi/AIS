@@ -3,6 +3,7 @@ import subprocess
 import json
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
+from dataclasses import dataclass, field
 from datetime import datetime
 
 # 基础路径配置
@@ -70,6 +71,11 @@ if not install_gradio():
 import gradio as gr
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
+
+# 提高 PIL 的图像大小限制，支持超大图像处理
+# 默认限制约 178M 像素，这里提高到 5000M 像素, 请按需修改
+Image.MAX_IMAGE_PIXELS = 5000000000
+
 import logging
 import io
 import numpy as np
@@ -120,13 +126,364 @@ def setup_logging():
 
 logger = setup_logging()
 
-def log_info(msg: str):
-    """记录日志"""
-    logger.info(msg)
-
-# 临时文件目录（用于存放剪贴板图片）
-TEMP_DIR = BASE_DIR / "临时"
+# 临时文件目录（统一使用英文目录名）
+TEMP_DIR = BASE_DIR / "TEMP"
 TEMP_DIR.mkdir(exist_ok=True)
+
+
+# ============================================================
+# 全局任务控制（用于取消正在进行的任务）
+# ============================================================
+import threading
+
+class TaskController:
+    """任务控制器 - 支持取消正在进行的任务"""
+    def __init__(self):
+        self._cancelled = threading.Event()
+        self._current_process: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
+    
+    def cancel(self):
+        """取消当前任务"""
+        self._cancelled.set()
+        with self._lock:
+            if self._current_process and self._current_process.poll() is None:
+                try:
+                    self._current_process.terminate()
+                    log_info("[任务] 已发送终止信号")
+                except:
+                    pass
+    
+    def reset(self):
+        """重置取消状态（开始新任务前调用）"""
+        self._cancelled.clear()
+        with self._lock:
+            self._current_process = None
+    
+    def is_cancelled(self) -> bool:
+        """检查是否已取消"""
+        return self._cancelled.is_set()
+    
+    def set_process(self, proc: subprocess.Popen):
+        """设置当前进程（用于强制终止）"""
+        with self._lock:
+            self._current_process = proc
+
+# 全局任务控制器
+_task_controller = TaskController()
+
+def cancel_current_task():
+    """取消当前任务"""
+    _task_controller.cancel()
+    return "任务已取消"
+
+def is_task_cancelled() -> bool:
+    """检查任务是否已取消"""
+    return _task_controller.is_cancelled()
+
+
+# ============================================================
+# 实时日志系统
+# ============================================================
+class RealtimeLogBuffer:
+    """线程安全的实时日志缓冲区"""
+    def __init__(self, max_lines: int = 100):
+        self._lines: List[str] = []
+        self._lock = threading.Lock()
+        self._max_lines = max_lines
+        self._video_info: str = ""  # 存储视频详细信息
+        self._processing = False
+    
+    def add(self, msg: str):
+        """添加一条日志"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        with self._lock:
+            self._lines.append(f"[{timestamp}] {msg}")
+            if len(self._lines) > self._max_lines:
+                self._lines.pop(0)
+    
+    def clear(self):
+        """清空日志"""
+        with self._lock:
+            self._lines.clear()
+            self._video_info = ""
+    
+    def get_all(self) -> str:
+        """获取所有日志"""
+        with self._lock:
+            return "\n".join(self._lines)
+    
+    def set_video_info(self, info: str):
+        """设置视频信息"""
+        with self._lock:
+            self._video_info = info
+    
+    def get_video_info(self) -> str:
+        """获取视频信息"""
+        with self._lock:
+            return self._video_info
+    
+    def set_processing(self, status: bool):
+        """设置处理状态"""
+        with self._lock:
+            self._processing = status
+    
+    def is_processing(self) -> bool:
+        """检查是否正在处理"""
+        with self._lock:
+            return self._processing
+
+# 全局日志缓冲区
+_realtime_log = RealtimeLogBuffer()
+
+def log_info(msg: str):
+    """记录日志 - 同时输出到终端和实时日志"""
+    logger.info(msg)
+    # 始终添加到实时日志缓冲区
+    _realtime_log.add(msg)
+
+
+# ============================================================
+# 视频处理进度管理（断点续传）
+# ============================================================
+@dataclass
+class VideoProgress:
+    """视频处理进度数据"""
+    video_path: str
+    work_dir: str
+    engine: str
+    scale: int
+    denoise: int
+    total_frames: int
+    processed_count: int
+    fps: float
+    audio_paths: List[str] = field(default_factory=list)
+    subtitle_paths: List[str] = field(default_factory=list)
+    output_format: str = "mp4"
+    codec: str = "libx264"
+    crf: int = 18
+    preset: str = "medium"
+    completed: bool = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "video_path": self.video_path,
+            "work_dir": self.work_dir,
+            "engine": self.engine,
+            "scale": self.scale,
+            "denoise": self.denoise,
+            "total_frames": self.total_frames,
+            "processed_count": self.processed_count,
+            "fps": self.fps,
+            "audio_paths": self.audio_paths,
+            "subtitle_paths": self.subtitle_paths,
+            "output_format": self.output_format,
+            "codec": self.codec,
+            "crf": self.crf,
+            "preset": self.preset,
+            "completed": self.completed
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'VideoProgress':
+        return cls(**data)
+    
+    def save(self, path: Path) -> None:
+        """保存进度到文件"""
+        path.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding='utf-8')
+    
+    @classmethod
+    def load(cls, path: Path) -> Optional['VideoProgress']:
+        """从文件加载进度"""
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding='utf-8'))
+                return cls.from_dict(data)
+        except Exception:
+            pass
+        return None
+
+
+def find_resumable_video_tasks() -> List[Tuple[Path, VideoProgress]]:
+    """查找可恢复的视频处理任务"""
+    resumable = []
+    if not TEMP_DIR.exists():
+        return resumable
+    
+    for work_dir in TEMP_DIR.iterdir():
+        if work_dir.is_dir() and work_dir.name.startswith("video_"):
+            progress_file = work_dir / "progress.json"
+            progress = VideoProgress.load(progress_file)
+            if progress and not progress.completed and progress.processed_count < progress.total_frames:
+                resumable.append((work_dir, progress))
+    
+    return resumable
+
+
+# ============================================================
+# 性能基准数据管理（用于ETA计算）
+# ============================================================
+PERFORMANCE_FILE = BASE_DIR / "performance_data.json"
+
+@dataclass
+class PerformanceData:
+    """性能基准数据 - 记录每个模型+预设的处理速度（秒/MB）"""
+    # 格式: { "engine:model:scale:denoise": {"seconds_per_mb": float, "samples": int, "last_updated": str} }
+    data: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    
+    @staticmethod
+    def make_key(engine: str, model: str = "", scale: int = 2, denoise: int = 0) -> str:
+        """生成性能数据的键"""
+        return f"{engine}:{model}:{scale}:{denoise}"
+    
+    def get_speed(self, engine: str, model: str = "", scale: int = 2, denoise: int = 0) -> Optional[float]:
+        """获取处理速度(秒/MB)，如果没有记录返回None"""
+        key = self.make_key(engine, model, scale, denoise)
+        if key in self.data:
+            return self.data[key].get("seconds_per_mb")
+        return None
+    
+    def get_last_speed(self, engine: str, model: str = "", scale: int = 2, denoise: int = 0) -> Optional[float]:
+        """获取最近一次的处理速度(秒/MB)"""
+        key = self.make_key(engine, model, scale, denoise)
+        if key in self.data:
+            return self.data[key].get("last_speed", self.data[key].get("seconds_per_mb"))
+        return None
+    
+    def update_speed(self, engine: str, model: str, scale: int, denoise: int, 
+                     input_size_mb: float, process_time: float):
+        """更新处理速度数据（使用加权平均，最近数据权重更高）"""
+        if input_size_mb <= 0 or process_time <= 0:
+            return
+        
+        key = self.make_key(engine, model, scale, denoise)
+        new_speed = process_time / input_size_mb
+        
+        if key in self.data:
+            old_speed = self.data[key].get("seconds_per_mb", new_speed)
+            samples = self.data[key].get("samples", 1)
+            # 更高权重给最近数据（0.5给新数据），让ETA更准确反映当前性能
+            weight = min(0.5, 1.0 / (samples + 1) + 0.3)  # 样本越多，新数据权重趋向0.3-0.5
+            avg_speed = old_speed * (1 - weight) + new_speed * weight
+            self.data[key] = {
+                "seconds_per_mb": round(avg_speed, 4),
+                "last_speed": round(new_speed, 4),  # 保存最近一次速度
+                "samples": min(samples + 1, 100),  # 最多记录100次样本
+                "last_updated": datetime.now().isoformat()
+            }
+        else:
+            self.data[key] = {
+                "seconds_per_mb": round(new_speed, 4),
+                "last_speed": round(new_speed, 4),
+                "samples": 1,
+                "last_updated": datetime.now().isoformat()
+            }
+    
+    def save(self) -> None:
+        """保存到文件"""
+        try:
+            PERFORMANCE_FILE.write_text(
+                json.dumps(self.data, ensure_ascii=False, indent=2), 
+                encoding='utf-8'
+            )
+        except Exception as e:
+            log_info(f"[性能] 保存性能数据失败: {e}")
+    
+    @classmethod
+    def load(cls) -> 'PerformanceData':
+        """从文件加载"""
+        try:
+            if PERFORMANCE_FILE.exists():
+                data = json.loads(PERFORMANCE_FILE.read_text(encoding='utf-8'))
+                return cls(data=data)
+        except Exception:
+            pass
+        return cls()
+
+# 全局性能数据实例
+_performance_data: Optional[PerformanceData] = None
+
+def get_performance_data() -> PerformanceData:
+    """获取全局性能数据实例"""
+    global _performance_data
+    if _performance_data is None:
+        _performance_data = PerformanceData.load()
+    return _performance_data
+
+
+def format_eta(seconds: float) -> str:
+    """格式化ETA时间显示"""
+    if seconds < 0:
+        return "计算中..."
+    elif seconds < 60:
+        return f"{int(seconds)}秒"
+    elif seconds < 3600:
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins}分{secs}秒"
+    else:
+        hours = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        return f"{hours}小时{mins}分"
+
+
+def check_memory_usage() -> Tuple[float, float, float]:
+    """检查内存使用情况
+    
+    返回: (使用率百分比, 已用GB, 总共GB)
+    """
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        usage_percent = mem.percent
+        used_gb = mem.used / (1024**3)
+        total_gb = mem.total / (1024**3)
+        return usage_percent, used_gb, total_gb
+    except ImportError:
+        return 0, 0, 0
+
+
+def is_memory_critical(threshold: float = 90.0) -> bool:
+    """检查内存是否处于危险水平
+    
+    参数:
+        threshold: 危险阈值百分比 (默认90%)
+    
+    返回: True 如果内存使用超过阈值
+    """
+    usage, _, _ = check_memory_usage()
+    return usage > threshold
+
+
+def calculate_eta_from_progress(current: int, total: int, elapsed_seconds: float) -> str:
+    """基于当前进度和已用时间计算ETA"""
+    if current <= 0 or elapsed_seconds <= 0:
+        return "计算中..."
+    
+    remaining = total - current
+    if remaining <= 0:
+        return "即将完成"
+    
+    speed = current / elapsed_seconds  # 项/秒
+    if speed <= 0:
+        return "计算中..."
+    
+    eta_seconds = remaining / speed
+    return format_eta(eta_seconds)
+
+
+def calculate_eta_from_mb(remaining_mb: float, engine: str, model: str = "", 
+                          scale: int = 2, denoise: int = 0) -> str:
+    """基于剩余数据量和历史性能计算ETA"""
+    perf = get_performance_data()
+    speed = perf.get_speed(engine, model, scale, denoise)
+    
+    if speed is None or speed <= 0:
+        return "无历史数据"
+    
+    eta_seconds = remaining_mb * speed
+    return format_eta(eta_seconds)
 
 def preprocess_image_input(image_input) -> Optional[str]:
     """预处理图片输入，支持多种输入类型
@@ -220,7 +577,7 @@ def cleanup_temp_files():
 # 缩略图系统 - 用于图库显示
 # ============================================================
 
-THUMBNAIL_DIR = BASE_DIR / "缩略图"
+THUMBNAIL_DIR = DATA_DIR / "缩略图"
 THUMBNAIL_DIR.mkdir(exist_ok=True)
 THUMBNAIL_SIZE = (300, 300)  # 缩略图尺寸
 
@@ -250,8 +607,11 @@ def create_thumbnail(image_path: str) -> Optional[str]:
         # 创建缩略图
         with Image.open(original) as img:
             # 处理GIF：只取第一帧
-            if hasattr(img, 'n_frames') and img.n_frames > 1:
-                img.seek(0)
+            try:
+                if getattr(img, 'n_frames', 1) > 1:
+                    img.seek(0)
+            except (AttributeError, EOFError):
+                pass
             
             # 转换为RGB（处理RGBA等情况）
             if img.mode in ('RGBA', 'LA', 'P'):
@@ -1309,6 +1669,198 @@ def build_anime4k_command(input_path: Path, output_path: Path,
     return cmd, config["dir"]
 
 
+def anime4k_process_video_native(
+    input_path: str,
+    output_path: str,
+    scale: float = 2.0,
+    model: str = "acnet-gan",
+    processor: str = "cuda",
+    device: int = 0,
+    encoder: str = "libx264",
+    bitrate: int = 8000,
+    progress_callback=None
+) -> Tuple[bool, str]:
+    """使用 Anime4KCPP 原生视频处理（极速模式）
+    
+    Anime4KCPP v3 支持直接处理视频，无需逐帧提取，速度极快
+    
+    参数:
+        input_path: 输入视频路径
+        output_path: 输出视频路径
+        scale: 放大倍率
+        model: 模型 (acnet/acnet-gan)
+        processor: 处理器 (cpu/opencl/cuda)
+        device: 设备索引
+        encoder: 编码器 (libx264等)
+        bitrate: 比特率 (kbps)
+        progress_callback: 进度回调
+    
+    返回: (成功, 消息)
+    """
+    config = ENGINES.get("anime4k")
+    if not config or not (config["dir"] / config["exe"]).exists():
+        return False, "Anime4K 引擎不可用"
+    
+    if progress_callback:
+        progress_callback("Anime4K 原生视频处理中...", None)
+    
+    cmd = [
+        str(config["dir"] / config["exe"]),
+        "-i", str(input_path),
+        "-o", str(output_path),
+        "-f", str(scale),
+        "-m", model,
+        "-p", processor,
+        "-d", str(device),
+        "video",  # 视频子命令
+        "--ve", encoder,
+        "--vb", str(bitrate)
+    ]
+    
+    log_info(f"[Anime4K] 原生视频处理: {Path(input_path).name}")
+    log_info(f"[Anime4K] 命令: {' '.join(cmd[:8])}...")
+    
+    try:
+        # 使用 Popen 实时读取输出
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(config["dir"]),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        
+        # 注册进程以支持取消
+        _task_controller.set_process(process)
+        
+        output_lines = []
+        # Anime4K CLI 进度输出格式: [=>     ]  10.44% [00m04s < 00m32s]
+        import re
+        progress_pattern = re.compile(r'\]\s*(\d+\.?\d*)%.*\[.*<\s*(\d+m\d+s)\]')
+        
+        if process.stdout:
+            for line in process.stdout:
+                # 检查是否已取消
+                if is_task_cancelled():
+                    log_info("[Anime4K] 收到取消请求，正在终止进程...")
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    return False, "[已取消] 任务被用户取消"
+                
+                line = line.strip()
+                if line:
+                    output_lines.append(line)
+                    # 解析进度 (Anime4KCPP 输出格式: [=>     ]  XX.XX% [elapsed < remaining])
+                    if "%" in line:
+                        match = progress_pattern.search(line)
+                        if match and progress_callback:
+                            percent = float(match.group(1))
+                            eta_str = match.group(2)  # 例如 "00m32s"
+                            # 转换 ETA 格式为更友好的显示
+                            eta_match = re.match(r'(\d+)m(\d+)s', eta_str)
+                            if eta_match:
+                                mins = int(eta_match.group(1))
+                                secs = int(eta_match.group(2))
+                                if mins > 0:
+                                    eta_display = f"{mins}分{secs}秒"
+                                else:
+                                    eta_display = f"{secs}秒"
+                                progress_msg = f"Anime4K 原生处理中: {percent:.1f}% | ETA: {eta_display}"
+                            else:
+                                progress_msg = f"Anime4K 原生处理中: {percent:.1f}%"
+                            progress_callback(progress_msg, percent)
+                        elif progress_callback:
+                            # 无法解析时显示原始行
+                            progress_callback(f"Anime4K: {line}", None)
+                    log_info(f"[Anime4K] {line}")
+        
+        process.wait()
+        
+        if process.returncode == 0 and Path(output_path).exists():
+            file_size = Path(output_path).stat().st_size / (1024 * 1024)
+            return True, f"处理完成 ({file_size:.1f} MB)"
+        elif is_task_cancelled():
+            return False, "[已取消] 任务被用户取消"
+        else:
+            return False, f"处理失败: {' '.join(output_lines[-3:])}"
+            
+    except subprocess.TimeoutExpired:
+        return False, "处理超时"
+    except Exception as e:
+        return False, f"处理异常: {e}"
+
+
+def anime4k_batch_process(
+    input_files: List[Path], 
+    output_dir: Path,
+    scale: float = 2.0, 
+    model: str = "acnet-gan",
+    processor: str = "cuda", 
+    device: int = 0,
+    progress_callback=None
+) -> Tuple[List[str], str]:
+    """Anime4K 批量处理（高效模式）
+    
+    使用 Anime4KCPP 的批量输入功能，一次处理多个文件，避免重复初始化
+    
+    返回: (成功处理的输出文件列表, 错误信息)
+    """
+    if not input_files:
+        return [], "无输入文件"
+    
+    config = ENGINES.get("anime4k")
+    if not config or not (config["dir"] / config["exe"]).exists():
+        return [], "Anime4K 引擎不可用"
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 构建批量命令 - 多个输入文件，多个输出文件
+    cmd = [str(config["dir"] / config["exe"])]
+    
+    # 添加所有输入文件
+    output_files = []
+    for i, inp in enumerate(input_files):
+        cmd.extend(["-i", str(inp)])
+        out_file = output_dir / f"processed_{i:06d}.png"
+        cmd.extend(["-o", str(out_file)])
+        output_files.append(str(out_file))
+    
+    # 添加处理参数
+    cmd.extend([
+        "-f", str(scale),
+        "-m", model,
+        "-p", processor,
+        "-d", str(device)
+    ])
+    
+    if progress_callback:
+        progress_callback(f"Anime4K 批量处理 {len(input_files)} 张图片...", None)
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(config["dir"]),
+            capture_output=True,
+            timeout=len(input_files) * 30  # 每张图片30秒超时
+        )
+        
+        if result.returncode == 0:
+            # 检查输出文件
+            successful = [f for f in output_files if Path(f).exists()]
+            return successful, ""
+        else:
+            error = result.stderr.decode('utf-8', errors='ignore')[:500]
+            return [], f"处理失败: {error}"
+    except subprocess.TimeoutExpired:
+        return [], "处理超时"
+    except Exception as e:
+        return [], f"处理异常: {e}"
+
+
 def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str], str]:
     """处理单张图片
     
@@ -1322,12 +1874,18 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
     返回:
         (输出路径, 状态消息) - 成功时输出路径为文件路径，失败时为 None
     """
+    import time
+    process_start_time = time.time()
+    
     if not input_path:
         return None, "[错误] 请先上传图片"
     
     input_file = Path(input_path)
     if not input_file.exists():
         return None, "[错误] 输入文件不存在"
+    
+    # 获取输入文件大小（MB）用于性能记录
+    input_size_mb = input_file.stat().st_size / (1024 * 1024)
     
     # 验证文件是否为有效图片
     try:
@@ -1336,8 +1894,41 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
     except Exception:
         return None, "[错误] 无效的图片文件"
     
+    # 处理中文文件名: 优先使用 Windows 短路径，避免复制
+    temp_input_file = input_file
+    has_non_ascii = any(ord(c) > 127 for c in str(input_file.absolute()))
+    if has_non_ascii:
+        try:
+            import ctypes
+            GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+            GetShortPathNameW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+            GetShortPathNameW.restype = ctypes.c_uint
+            
+            long_path = str(input_file.absolute())
+            buf_size = GetShortPathNameW(long_path, None, 0)
+            if buf_size > 0:
+                buf = ctypes.create_unicode_buffer(buf_size)
+                GetShortPathNameW(long_path, buf, buf_size)
+                short_path = buf.value
+                if short_path and Path(short_path).exists():
+                    temp_input_file = Path(short_path)
+                    has_non_ascii = False  # 短路径可用，无需清理
+        except Exception:
+            pass
+        
+        # 如果短路径不可用，才复制文件
+        if has_non_ascii:
+            import shutil
+            temp_name = f"input_{uuid.uuid4().hex[:8]}{input_file.suffix}"
+            temp_input_file = TEMP_DIR / temp_name
+            TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(input_file, temp_input_file)
+    
     engine_status = check_engines()
     if not engine_status.get(engine, False):
+        # 清理临时文件
+        if has_non_ascii and temp_input_file.exists():
+            temp_input_file.unlink(missing_ok=True)
         return None, f"[错误] {engine} 引擎不可用"
     
     # 通用高级参数
@@ -1362,7 +1953,7 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
         out_name = f"{input_file.stem}_CUGAN_{model}_{scale}x_n{denoise}.{output_format}"
         out_path = get_unique_path(out_name)
         cmd, cwd = build_cugan_command(
-            input_file, out_path, scale, denoise, model,
+            temp_input_file, out_path, scale, denoise, model,
             tile_size=tile_size, syncgap=syncgap, gpu_id=gpu_id,
             threads=threads, tta_mode=tta_mode, output_format=output_format
         )
@@ -1374,7 +1965,7 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
         out_name = f"{input_file.stem}_ESRGAN_{scale}x.{output_format}"
         out_path = get_unique_path(out_name)
         cmd, cwd = build_esrgan_command(
-            input_file, out_path, scale, model_name=model_name,
+            temp_input_file, out_path, scale, model_name=model_name,
             tile_size=tile_size, gpu_id=gpu_id, threads=threads,
             tta_mode=tta_mode, output_format=output_format
         )
@@ -1387,7 +1978,7 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
         out_name = f"{input_file.stem}_Waifu_{scale}x_n{denoise}.{output_format}"
         out_path = get_unique_path(out_name)
         cmd, cwd = build_waifu2x_command(
-            input_file, out_path, scale, denoise, model_type=model_type,
+            temp_input_file, out_path, scale, denoise, model_type=model_type,
             tile_size=tile_size, gpu_id=gpu_id, threads=threads,
             tta_mode=tta_mode, output_format=output_format
         )
@@ -1396,23 +1987,44 @@ def process_image(input_path: str, engine: str, **params) -> Tuple[Optional[str]
     elif engine == "anime4k":
         scale = params.get("scale", 2.0)
         model = params.get("model_name", params.get("model", "acnet-gan"))
-        processor = params.get("processor", "opencl")
+        # 优先使用 CUDA，其次 OpenCL，最后 CPU
+        processor = params.get("processor", "cuda")
         device = params.get("device", 0)
         out_name = f"{input_file.stem}_Anime4K_{model}_{scale}x.{output_format}"
         out_path = get_unique_path(out_name)
         cmd, cwd = build_anime4k_command(
-            input_file, out_path, scale=scale, model=model,
+            temp_input_file, out_path, scale=scale, model=model,
             processor=processor, device=device
         )
         metadata.update({"scale": scale, "model": model, "processor": processor})
         
     else:
+        # 清理临时文件
+        if has_non_ascii and temp_input_file.exists():
+            temp_input_file.unlink(missing_ok=True)
         return None, f"[错误] 未知引擎: {engine}"
     
     # 执行处理
     success, msg, log = run_command(cmd, cwd)
     
+    # 清理临时输入文件
+    if has_non_ascii and temp_input_file.exists():
+        try:
+            temp_input_file.unlink(missing_ok=True)
+        except:
+            pass
+    
     if success and out_path.exists():
+        # 记录性能数据（用于ETA计算）
+        process_time = time.time() - process_start_time
+        if input_size_mb > 0 and process_time > 0:
+            perf = get_performance_data()
+            model_name = metadata.get('model', '')
+            scale = metadata.get('scale', 2)
+            denoise = metadata.get('denoise', 0)
+            perf.update_speed(engine, model_name, scale, denoise, input_size_mb, process_time)
+            perf.save()
+        
         # 写入AIS元数据
         write_ais_metadata(out_path, metadata)
         # 构建带日志的完成消息
@@ -1433,10 +2045,20 @@ def process_with_preset(input_image,
     """使用预设处理图片（支持内置预设和固定的自定义预设）
     返回: (处理结果, 对比元组, 原图路径, 结果路径, 状态消息)
     """
+    # 使用全局实时日志
+    _realtime_log.clear()
+    _realtime_log.set_processing(True)
+    
+    _realtime_log.add("开始处理...")
+    
     # 预处理图片输入（支持剪贴板粘贴）
     input_path = preprocess_image_input(input_image)
     if input_path is None:
-        return None, None, None, None, "[错误] 请先上传图片"
+        _realtime_log.add("[错误] 请先上传图片")
+        _realtime_log.set_processing(False)
+        return None, None, None, None, _realtime_log.get_all()
+    
+    _realtime_log.add(f"输入文件: {Path(input_path).name}")
     
     # 获取预设配置（支持内置和自定义预设）
     preset = get_preset_config(preset_name)
@@ -1445,34 +2067,58 @@ def process_with_preset(input_image,
         preset = PRESETS.get(preset_name)
     
     if not preset:
-        return None, None, None, None, f"[错误] 未知预设: {preset_name}"
+        _realtime_log.add(f"[错误] 未知预设: {preset_name}")
+        _realtime_log.set_processing(False)
+        return None, None, None, None, _realtime_log.get_all()
     
     engine = preset.get("engine", "cugan")
     params = preset.get("params", {})
+    _realtime_log.add(f"使用预设: {preset_name}")
+    _realtime_log.add(f"引擎: {engine.upper()}, 参数: {params}")
     
     # 检查是否为GIF，如果是则使用GIF处理
     if is_animated_gif(input_path):
+        _realtime_log.add("检测到动图，使用动图处理模式")
         output_path, result_msg = process_gif_image(input_path, engine, gif_output_format=gif_output_format, **params)
     else:
         output_path, result_msg = process_image(input_path, engine, **params)
     
+    # 添加处理结果日志
+    if result_msg:
+        for line in result_msg.split('\n'):
+            if line.strip():
+                _realtime_log.add(line.strip())
+    
+    _realtime_log.set_processing(False)
+    
     if output_path:
-        return output_path, (input_path, output_path), input_path, output_path, result_msg
-    return None, None, None, None, result_msg
+        _realtime_log.add(f"[完成] 输出: {Path(output_path).name}")
+        return output_path, (input_path, output_path), input_path, output_path, _realtime_log.get_all()
+    
+    return None, None, None, None, _realtime_log.get_all()
 
 
 def process_all_presets(input_image) -> Tuple[List[Optional[str]], str]:
     """执行所有预设并返回结果"""
+    # 使用全局实时日志
+    _realtime_log.clear()
+    _realtime_log.set_processing(True)
+    
+    _realtime_log.add("开始批量处理...")
+    
     # 预处理图片输入（支持剪贴板粘贴）
     input_path = preprocess_image_input(input_image)
     if input_path is None:
-        return [None] * 4, "[错误] 请先上传图片"
+        _realtime_log.add("[错误] 请先上传图片")
+        _realtime_log.set_processing(False)
+        return [None] * 4, _realtime_log.get_all()
+    
+    _realtime_log.add(f"输入文件: {Path(input_path).name}")
     
     results: List[Optional[str]] = []
-    messages: List[str] = []
     
     for preset_name, preset in PRESETS.items():
-        messages.append(f"正在执行: {preset_name}")
+        _realtime_log.add(f"正在执行: {preset_name}")
         output_path, msg = process_image(
             input_path,
             preset["engine"],
@@ -1481,16 +2127,18 @@ def process_all_presets(input_image) -> Tuple[List[Optional[str]], str]:
         
         if output_path:
             results.append(output_path)
-            messages.append(f"  [OK] {preset_name} 完成")
+            _realtime_log.add(f"  [OK] {preset_name} 完成 -> {Path(output_path).name}")
         else:
             results.append(None)
-            messages.append(f"  [X] {preset_name} 失败: {msg}")
+            _realtime_log.add(f"  [X] {preset_name} 失败: {msg}")
     
     # 确保返回4个结果
     while len(results) < 4:
         results.append(None)
     
-    return results, "\n".join(messages)
+    _realtime_log.add("[完成] 批量处理结束")
+    _realtime_log.set_processing(False)
+    return results, _realtime_log.get_all()
 
 
 def process_custom(input_image, engine: str, 
@@ -1500,10 +2148,21 @@ def process_custom(input_image, engine: str,
     """自定义模式处理
     返回: (处理结果, 对比元组, 原图路径, 结果路径, 状态消息)
     """
+    # 使用全局实时日志
+    _realtime_log.clear()
+    _realtime_log.set_processing(True)
+    
+    _realtime_log.add("开始自定义处理...")
+    
     # 预处理图片输入（支持剪贴板粘贴）
     input_path = preprocess_image_input(input_image)
     if input_path is None:
-        return None, None, None, None, "[错误] 请先上传图片"
+        _realtime_log.add("[错误] 请先上传图片")
+        _realtime_log.set_processing(False)
+        return None, None, None, None, _realtime_log.get_all()
+    
+    _realtime_log.add(f"输入文件: {Path(input_path).name}")
+    _realtime_log.add(f"引擎: {engine}")
     
     output: Optional[str] = None
     msg: str = ""
@@ -1512,28 +2171,43 @@ def process_custom(input_image, engine: str,
         model = "Pro" if "Pro" in cugan_model else "SE"
         denoise_map = {"无降噪": -1, "保守降噪": 0, "强力降噪": 3}
         denoise = denoise_map.get(cugan_denoise, 0)
+        _realtime_log.add(f"参数: scale={cugan_scale}, denoise={denoise}, model={model}")
         output, msg = process_image(
             input_path, "cugan", 
             scale=int(cugan_scale), denoise=denoise, model=model
         )
     
     elif engine == "Real-ESRGAN":
+        _realtime_log.add(f"参数: scale={esrgan_scale}")
         output, msg = process_image(
             input_path, "esrgan", 
             scale=int(esrgan_scale)
         )
     
     elif engine == "Waifu2x":
+        _realtime_log.add(f"参数: scale={waifu_scale}, denoise={waifu_denoise}")
         output, msg = process_image(
             input_path, "waifu2x",
             scale=int(waifu_scale), denoise=int(waifu_denoise)
         )
     else:
-        return None, None, None, None, "[错误] 请选择引擎"
+        _realtime_log.add("[错误] 请选择引擎")
+        _realtime_log.set_processing(False)
+        return None, None, None, None, _realtime_log.get_all()
+    
+    # 添加处理结果日志
+    if msg:
+        for line in msg.split('\n'):
+            if line.strip():
+                _realtime_log.add(line.strip())
+    
+    _realtime_log.set_processing(False)
     
     if output:
-        return output, (input_path, output), input_path, output, msg
-    return None, None, None, None, msg
+        _realtime_log.add(f"[完成] 输出: {Path(output).name}")
+        return output, (input_path, output), input_path, output, _realtime_log.get_all()
+    
+    return None, None, None, None, _realtime_log.get_all()
 
 
 # ============================================================
@@ -1890,6 +2564,1483 @@ def process_gif_image(input_path: str, engine: str, gif_output_format: str = "gi
         # 清理临时文件
         cleanup_gif_temp(frames_dir)
         cleanup_gif_temp(processed_dir)
+
+
+# ============================================================
+# 视频超分处理 (Beta) - 完整版
+# ============================================================
+
+@dataclass
+class VideoStreamInfo:
+    """视频流信息"""
+    index: int
+    codec_name: str
+    codec_type: str  # video, audio, subtitle
+    language: str = ""
+    title: str = ""
+    
+    # 视频专用
+    width: int = 0
+    height: int = 0
+    fps: float = 0.0
+    duration: float = 0.0
+    bit_rate: int = 0
+    pix_fmt: str = ""
+    
+    # 音频专用
+    channels: int = 0
+    sample_rate: int = 0
+    
+    # 字幕专用
+    subtitle_codec: str = ""
+
+
+@dataclass
+class VideoInfo:
+    """完整视频信息"""
+    path: str
+    duration: float
+    bit_rate: int
+    format_name: str
+    
+    video_streams: List[VideoStreamInfo]
+    audio_streams: List[VideoStreamInfo]
+    subtitle_streams: List[VideoStreamInfo]
+    
+    # 主视频流信息
+    width: int = 0
+    height: int = 0
+    fps: float = 0.0
+    total_frames: int = 0
+    video_codec: str = ""
+    
+    @property
+    def has_audio(self) -> bool:
+        return len(self.audio_streams) > 0
+    
+    @property
+    def has_subtitle(self) -> bool:
+        return len(self.subtitle_streams) > 0
+    
+    @property
+    def audio_count(self) -> int:
+        return len(self.audio_streams)
+    
+    @property
+    def subtitle_count(self) -> int:
+        return len(self.subtitle_streams)
+
+
+def get_video_info_full(video_path: str) -> Optional[VideoInfo]:
+    """获取完整视频信息，包括所有音轨和字幕轨
+    
+    返回: VideoInfo 对象或 None
+    """
+    if not FFPROBE_EXE.exists():
+        return None
+    
+    try:
+        cmd = [
+            str(FFPROBE_EXE),
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            video_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode != 0:
+            return None
+        
+        data = json.loads(result.stdout.decode('utf-8'))
+        
+        video_streams = []
+        audio_streams = []
+        subtitle_streams = []
+        
+        for stream in data.get('streams', []):
+            codec_type = stream.get('codec_type', '')
+            
+            stream_info = VideoStreamInfo(
+                index=stream.get('index', 0),
+                codec_name=stream.get('codec_name', 'unknown'),
+                codec_type=codec_type,
+                language=stream.get('tags', {}).get('language', ''),
+                title=stream.get('tags', {}).get('title', ''),
+            )
+            
+            if codec_type == 'video':
+                # 计算帧率
+                fps_str = stream.get('r_frame_rate', '30/1')
+                if '/' in fps_str:
+                    num, den = map(int, fps_str.split('/'))
+                    fps = num / den if den > 0 else 30.0
+                else:
+                    fps = float(fps_str)
+                
+                stream_info.width = int(stream.get('width', 0))
+                stream_info.height = int(stream.get('height', 0))
+                stream_info.fps = fps
+                stream_info.pix_fmt = stream.get('pix_fmt', '')
+                stream_info.bit_rate = int(stream.get('bit_rate', 0) or 0)
+                video_streams.append(stream_info)
+                
+            elif codec_type == 'audio':
+                stream_info.channels = int(stream.get('channels', 0))
+                stream_info.sample_rate = int(stream.get('sample_rate', 0) or 0)
+                stream_info.bit_rate = int(stream.get('bit_rate', 0) or 0)
+                audio_streams.append(stream_info)
+                
+            elif codec_type == 'subtitle':
+                stream_info.subtitle_codec = stream.get('codec_name', '')
+                subtitle_streams.append(stream_info)
+        
+        if not video_streams:
+            return None
+        
+        # 获取格式信息
+        fmt = data.get('format', {})
+        duration = float(fmt.get('duration', 0))
+        bit_rate = int(fmt.get('bit_rate', 0) or 0)
+        format_name = fmt.get('format_name', '')
+        
+        # 主视频流
+        main_video = video_streams[0]
+        total_frames = int(main_video.fps * duration) if duration > 0 else 0
+        
+        return VideoInfo(
+            path=video_path,
+            duration=duration,
+            bit_rate=bit_rate,
+            format_name=format_name,
+            video_streams=video_streams,
+            audio_streams=audio_streams,
+            subtitle_streams=subtitle_streams,
+            width=main_video.width,
+            height=main_video.height,
+            fps=main_video.fps,
+            total_frames=total_frames,
+            video_codec=main_video.codec_name
+        )
+        
+    except Exception as e:
+        log_info(f"[视频] 获取视频信息失败: {e}")
+        return None
+
+
+def get_video_info(video_path: str) -> Optional[Dict[str, Any]]:
+    """获取视频信息（兼容性接口）
+    
+    返回: {
+        'duration': 时长(秒),
+        'fps': 帧率,
+        'width': 宽度,
+        'height': 高度,
+        'total_frames': 总帧数,
+        'has_audio': 是否有音频,
+        'codec': 视频编码,
+        'audio_codec': 音频编码,
+        'audio_count': 音轨数量,
+        'subtitle_count': 字幕轨数量
+    }
+    """
+    info = get_video_info_full(video_path)
+    if not info:
+        return None
+    
+    return {
+        'duration': info.duration,
+        'fps': info.fps,
+        'width': info.width,
+        'height': info.height,
+        'total_frames': info.total_frames,
+        'has_audio': info.has_audio,
+        'codec': info.video_codec,
+        'audio_codec': info.audio_streams[0].codec_name if info.audio_streams else 'none',
+        'audio_count': info.audio_count,
+        'subtitle_count': info.subtitle_count
+    }
+
+
+def extract_video_frames(
+    video_path: str, 
+    output_dir: Path, 
+    fps: Optional[float] = None,
+    progress_callback=None
+) -> Tuple[List[str], float, str]:
+    """从视频中提取帧
+    
+    参数:
+        video_path: 视频路径
+        output_dir: 输出目录
+        fps: 提取帧率，None 表示使用原始帧率
+        progress_callback: 进度回调 (msg, pct)
+    
+    返回: (帧路径列表, 帧率, 错误信息)
+    """
+    if not FFMPEG_EXE.exists():
+        return [], 0, "FFmpeg 未安装"
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame_pattern = str(output_dir / "frame_%06d.png")
+    
+    # 获取视频信息
+    info = get_video_info(video_path)
+    if not info:
+        return [], 0, "无法获取视频信息"
+    
+    actual_fps: float = fps if fps is not None else info['fps']
+    
+    try:
+        cmd = [
+            str(FFMPEG_EXE),
+            "-y",
+            "-i", video_path,
+        ]
+        
+        # 如果指定了帧率，使用 fps 过滤器
+        if fps and fps != info['fps']:
+            cmd.extend(["-vf", f"fps={fps}"])
+        
+        cmd.extend([
+            "-pix_fmt", "rgb24",
+            "-start_number", "0",
+            frame_pattern
+        ])
+        
+        if progress_callback:
+            progress_callback("正在提取视频帧...", None)
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=7200)  # 2小时超时
+        
+        if result.returncode != 0:
+            error = result.stderr.decode('utf-8', errors='ignore')[:500]
+            return [], 0, f"帧提取失败: {error}"
+        
+        # 获取提取的帧
+        frames = sorted(output_dir.glob("frame_*.png"))
+        frame_paths = [str(f) for f in frames]
+        
+        log_info(f"[视频] 提取了 {len(frame_paths)} 帧，帧率: {actual_fps:.2f}fps")
+        return frame_paths, actual_fps, ""
+        
+    except subprocess.TimeoutExpired:
+        return [], 0, "帧提取超时（超过2小时）"
+    except Exception as e:
+        return [], 0, f"帧提取异常: {e}"
+
+
+def extract_video_frames_segment(
+    video_path: str, 
+    output_dir: Path, 
+    start_time: float = 0,
+    duration: float = 15,
+    fps: Optional[float] = None,
+    progress_callback=None
+) -> Tuple[List[str], float, str]:
+    """从视频中提取指定时间段的帧（用于切片处理）
+    
+    参数:
+        video_path: 视频路径
+        output_dir: 输出目录
+        start_time: 起始时间（秒）
+        duration: 提取时长（秒）
+        fps: 提取帧率，None 表示使用原始帧率
+        progress_callback: 进度回调 (msg, pct)
+    
+    返回: (帧路径列表, 帧率, 错误信息)
+    """
+    if not FFMPEG_EXE.exists():
+        return [], 0, "FFmpeg 未安装"
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame_pattern = str(output_dir / "frame_%06d.png")
+    
+    # 获取视频信息
+    info = get_video_info(video_path)
+    if not info:
+        return [], 0, "无法获取视频信息"
+    
+    actual_fps: float = fps if fps is not None else info['fps']
+    
+    try:
+        cmd = [
+            str(FFMPEG_EXE),
+            "-y",
+            "-ss", str(start_time),      # 起始时间
+            "-i", video_path,
+            "-t", str(duration),         # 提取时长
+        ]
+        
+        # 如果指定了帧率，使用 fps 过滤器
+        if fps and fps != info['fps']:
+            cmd.extend(["-vf", f"fps={fps}"])
+        
+        cmd.extend([
+            "-pix_fmt", "rgb24",
+            "-start_number", "0",
+            frame_pattern
+        ])
+        
+        if progress_callback:
+            progress_callback(f"正在提取帧 ({start_time:.1f}s-{start_time+duration:.1f}s)...", None)
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=1800)  # 30分钟超时
+        
+        if result.returncode != 0:
+            error = result.stderr.decode('utf-8', errors='ignore')[:500]
+            return [], 0, f"帧提取失败: {error}"
+        
+        # 获取提取的帧
+        frames = sorted(output_dir.glob("frame_*.png"))
+        frame_paths = [str(f) for f in frames]
+        
+        log_info(f"[视频切片] 提取了 {len(frame_paths)} 帧 ({start_time:.1f}s-{start_time+duration:.1f}s)")
+        return frame_paths, actual_fps, ""
+        
+    except subprocess.TimeoutExpired:
+        return [], 0, "帧提取超时"
+    except Exception as e:
+        return [], 0, f"帧提取异常: {e}"
+
+
+def extract_all_streams(
+    video_path: str,
+    work_dir: Path,
+    keep_audio: bool = True,
+    keep_subtitles: bool = True,
+    progress_callback=None
+) -> Tuple[Optional[str], List[str], List[str], str]:
+    """提取所有音轨和字幕轨
+    
+    参数:
+        video_path: 视频路径
+        work_dir: 工作目录
+        keep_audio: 是否保留音轨
+        keep_subtitles: 是否保留字幕
+        progress_callback: 进度回调
+    
+    返回: (主音轨路径, 所有音轨路径列表, 所有字幕路径列表, 错误信息)
+    """
+    if not FFMPEG_EXE.exists():
+        return None, [], [], "FFmpeg 未安装"
+    
+    info = get_video_info_full(video_path)
+    if not info:
+        return None, [], [], "无法获取视频信息"
+    
+    audio_paths = []
+    subtitle_paths = []
+    main_audio = None
+    
+    try:
+        # 提取所有音轨
+        if keep_audio and info.audio_streams:
+            if progress_callback:
+                progress_callback("正在提取音轨...", None)
+            
+            for i, audio_stream in enumerate(info.audio_streams):
+                lang = audio_stream.language or f"track{i}"
+                title = audio_stream.title or ""
+                audio_file = work_dir / f"audio_{i}_{lang}.aac"
+                
+                cmd = [
+                    str(FFMPEG_EXE),
+                    "-y",
+                    "-i", video_path,
+                    "-map", f"0:a:{i}",
+                    "-c:a", "aac",
+                    "-b:a", "192k",
+                    str(audio_file)
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, timeout=600)
+                if result.returncode == 0 and audio_file.exists():
+                    audio_paths.append(str(audio_file))
+                    if i == 0:
+                        main_audio = str(audio_file)
+                    log_info(f"[视频] 音轨 {i+1} 提取成功: {lang} {title}")
+        
+        # 提取所有字幕轨
+        if keep_subtitles and info.subtitle_streams:
+            if progress_callback:
+                progress_callback("正在提取字幕...", None)
+            
+            for i, sub_stream in enumerate(info.subtitle_streams):
+                lang = sub_stream.language or f"sub{i}"
+                title = sub_stream.title or ""
+                
+                # 根据字幕类型选择输出格式
+                if sub_stream.subtitle_codec in ['ass', 'ssa']:
+                    sub_ext = 'ass'
+                elif sub_stream.subtitle_codec in ['subrip', 'srt']:
+                    sub_ext = 'srt'
+                elif sub_stream.subtitle_codec in ['dvd_subtitle', 'dvdsub']:
+                    sub_ext = 'sub'
+                elif sub_stream.subtitle_codec in ['hdmv_pgs_subtitle', 'pgssub']:
+                    sub_ext = 'sup'
+                else:
+                    sub_ext = 'srt'  # 默认转为 srt
+                
+                sub_file = work_dir / f"subtitle_{i}_{lang}.{sub_ext}"
+                
+                cmd = [
+                    str(FFMPEG_EXE),
+                    "-y",
+                    "-i", video_path,
+                    "-map", f"0:s:{i}",
+                ]
+                
+                # 图形字幕直接复制，文本字幕可以转码
+                if sub_stream.subtitle_codec in ['hdmv_pgs_subtitle', 'pgssub', 'dvd_subtitle', 'dvdsub']:
+                    cmd.extend(["-c:s", "copy"])
+                else:
+                    cmd.extend(["-c:s", "srt" if sub_ext == 'srt' else "copy"])
+                
+                cmd.append(str(sub_file))
+                
+                result = subprocess.run(cmd, capture_output=True, timeout=300)
+                if result.returncode == 0 and sub_file.exists():
+                    subtitle_paths.append(str(sub_file))
+                    log_info(f"[视频] 字幕轨 {i+1} 提取成功: {lang} {title}")
+        
+        return main_audio, audio_paths, subtitle_paths, ""
+        
+    except Exception as e:
+        return None, audio_paths, subtitle_paths, f"流提取异常: {e}"
+
+
+def reassemble_video_full(
+    frame_dir: Path,
+    output_path: str,
+    fps: float,
+    original_video: str,
+    audio_paths: Optional[List[str]] = None,
+    subtitle_paths: Optional[List[str]] = None,
+    codec: str = "libx264",
+    crf: int = 18,
+    preset: str = "medium",
+    copy_metadata: bool = True,
+    progress_callback=None
+) -> Tuple[bool, str]:
+    """重新组装视频，支持多音轨和字幕
+    
+    参数:
+        frame_dir: 处理后帧所在目录
+        output_path: 输出视频路径
+        fps: 帧率
+        original_video: 原始视频路径（用于复制元数据）
+        audio_paths: 音轨文件路径列表
+        subtitle_paths: 字幕文件路径列表
+        codec: 视频编码器
+        crf: 质量参数
+        preset: 编码速度预设
+        copy_metadata: 是否复制元数据
+        progress_callback: 进度回调
+    
+    返回: (成功标志, 消息)
+    """
+    if not FFMPEG_EXE.exists():
+        return False, "FFmpeg 未安装"
+    
+    frame_pattern = str(frame_dir / "processed_%06d.png")
+    
+    # 检查帧是否存在
+    if not list(frame_dir.glob("processed_*.png")):
+        return False, "没有找到处理后的帧"
+    
+    if progress_callback:
+        progress_callback("正在合成视频...", None)
+    
+    try:
+        cmd = [
+            str(FFMPEG_EXE),
+            "-y",
+            "-framerate", str(fps),
+            "-i", frame_pattern,
+        ]
+        
+        # 添加所有音轨
+        audio_map_count = 0
+        if audio_paths:
+            for audio_path in audio_paths:
+                if Path(audio_path).exists():
+                    cmd.extend(["-i", audio_path])
+                    audio_map_count += 1
+        
+        # 添加所有字幕轨
+        subtitle_map_count = 0
+        if subtitle_paths:
+            for sub_path in subtitle_paths:
+                if Path(sub_path).exists():
+                    cmd.extend(["-i", sub_path])
+                    subtitle_map_count += 1
+        
+        # 映射视频流
+        cmd.extend(["-map", "0:v:0"])
+        
+        # 映射音频流
+        for i in range(audio_map_count):
+            cmd.extend(["-map", f"{i+1}:a:0"])
+        
+        # 映射字幕流
+        for i in range(subtitle_map_count):
+            cmd.extend(["-map", f"{audio_map_count + i + 1}:s:0"])
+        
+        # 视频编码设置
+        cmd.extend([
+            "-c:v", codec,
+            "-crf", str(crf),
+            "-preset", preset,
+            "-pix_fmt", "yuv420p",
+        ])
+        
+        # 音频设置 - 直接复制或重编码
+        if audio_map_count > 0:
+            cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+        
+        # 字幕设置 - 直接复制
+        if subtitle_map_count > 0:
+            # 根据输出格式选择字幕处理方式
+            if output_path.endswith('.mkv'):
+                cmd.extend(["-c:s", "copy"])  # MKV 支持大多数字幕格式
+            elif output_path.endswith('.mp4'):
+                cmd.extend(["-c:s", "mov_text"])  # MP4 使用 mov_text
+            else:
+                cmd.extend(["-c:s", "copy"])
+        
+        # 确保时长匹配
+        cmd.extend(["-shortest"])
+        
+        # 添加元数据
+        if copy_metadata:
+            cmd.extend([
+                "-metadata", f"comment=Upscaled by AIS",
+            ])
+        
+        cmd.append(output_path)
+        
+        log_info(f"[视频] 合成命令: {' '.join(cmd[:10])}...")
+        
+        result = subprocess.run(cmd, capture_output=True, timeout=14400)  # 4小时超时
+        
+        if result.returncode == 0 and Path(output_path).exists():
+            file_size = Path(output_path).stat().st_size / (1024 * 1024)
+            log_info(f"[视频] 合成完成: {Path(output_path).name} ({file_size:.1f} MB)")
+            return True, f"视频合成完成 ({file_size:.1f} MB)"
+        else:
+            error = result.stderr.decode('utf-8', errors='ignore')[:500]
+            log_info(f"[视频] 合成失败: {error}")
+            
+            # 尝试简化命令（不包含字幕）
+            if subtitle_map_count > 0:
+                log_info("[视频] 尝试不包含字幕重新合成...")
+                return reassemble_video_full(
+                    frame_dir, output_path, fps, original_video,
+                    audio_paths, None, codec, crf, preset, copy_metadata, progress_callback
+                )
+            
+            return False, f"视频合成失败: {error}"
+            
+    except subprocess.TimeoutExpired:
+        return False, "视频合成超时（超过4小时）"
+    except Exception as e:
+        return False, f"视频合成异常: {e}"
+
+
+def reassemble_video(
+    frame_dir: Path,
+    output_path: str,
+    fps: float,
+    audio_path: Optional[str] = None,
+    codec: str = "libx264",
+    crf: int = 18,
+    preset: str = "medium"
+) -> Tuple[bool, str]:
+    """重新组装视频（兼容性接口）"""
+    audio_paths = [audio_path] if audio_path else None
+    return reassemble_video_full(
+        frame_dir, output_path, fps, "",
+        audio_paths, None, codec, crf, preset, False, None
+    )
+
+
+def process_video_segmented(
+    video_path: str,
+    temp_video_path: str,
+    original_name: str,
+    work_dir: Path,
+    engine: str,
+    output_format: str,
+    codec: str,
+    crf: int,
+    preset: str,
+    keep_audio: bool,
+    keep_subtitles: bool,
+    extract_fps: Optional[float],
+    progress_callback,
+    scale: int,
+    denoise: int,
+    target_resolution: Optional[Tuple[int, int]],
+    info_dict: dict,
+    segment_duration: int,
+    **params
+) -> Tuple[Optional[str], str]:
+    """切片处理视频 - 将视频分段处理以避免内存溢出
+    
+    参数:
+        video_path: 原始视频路径
+        temp_video_path: 临时视频路径（处理过中文路径）
+        original_name: 原始文件名
+        work_dir: 工作目录
+        engine: 超分引擎
+        output_format: 输出格式
+        codec: 编码器
+        crf: 质量参数
+        preset: 编码预设
+        keep_audio: 保留音轨
+        keep_subtitles: 保留字幕
+        extract_fps: 提取帧率
+        progress_callback: 进度回调
+        scale: 放大倍数
+        denoise: 降噪强度
+        target_resolution: 目标分辨率
+        info_dict: 视频信息
+        segment_duration: 切片时长（秒）
+        **params: 引擎参数
+    
+    返回: (输出路径, 状态消息)
+    """
+    import time
+    import shutil
+    
+    video_file = Path(video_path)
+    total_duration = info_dict.get('duration', 0)
+    fps = info_dict.get('fps', 30)
+    
+    # 计算切片数量
+    num_segments = int(total_duration / segment_duration) + (1 if total_duration % segment_duration > 0 else 0)
+    log_info(f"[视频切片] 视频时长 {total_duration:.1f}秒，切片时长 {segment_duration}秒，共 {num_segments} 个切片")
+    
+    if progress_callback:
+        progress_callback(f"切片处理模式：共 {num_segments} 个切片", 0)
+    
+    # 创建切片目录
+    segments_dir = work_dir / "segments"
+    processed_segments_dir = work_dir / "processed_segments"
+    segments_dir.mkdir(parents=True, exist_ok=True)
+    processed_segments_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 提取音轨和字幕（只需一次）
+    audio_paths: List[str] = []
+    subtitle_paths: List[str] = []
+    
+    if keep_audio or keep_subtitles:
+        if progress_callback:
+            progress_callback("正在提取音轨和字幕...", 1)
+        main_audio, audio_paths, subtitle_paths, error = extract_all_streams(
+            temp_video_path, work_dir, keep_audio, keep_subtitles, progress_callback
+        )
+        if audio_paths:
+            log_info(f"[视频切片] 提取了 {len(audio_paths)} 个音轨")
+        if subtitle_paths:
+            log_info(f"[视频切片] 提取了 {len(subtitle_paths)} 个字幕轨")
+    
+    # 构建引擎参数
+    engine_params = dict(params)
+    engine_params['scale'] = scale
+    if denoise >= 0:
+        engine_params['denoise'] = denoise
+    
+    # 处理 anime4k-builtin
+    actual_engine = engine
+    use_batch_mode = False
+    if engine == 'anime4k-builtin':
+        actual_engine = 'anime4k'
+        use_batch_mode = True
+    
+    if actual_engine == 'anime4k':
+        engine_params.setdefault('processor', 'cuda')
+    
+    batch_size = params.get('batch_size', 100)
+    processed_segment_files = []
+    segment_start_time = time.time()
+    
+    try:
+        # 逐个处理切片
+        for seg_idx in range(num_segments):
+            # 检查是否已取消
+            if is_task_cancelled():
+                log_info("[视频切片] 任务已取消")
+                return None, "[已取消] 任务被用户取消"
+            
+            # 计算切片时间范围
+            start_time = seg_idx * segment_duration
+            end_time = min((seg_idx + 1) * segment_duration, total_duration)
+            seg_duration = end_time - start_time
+            
+            log_info(f"[视频切片] 处理切片 {seg_idx + 1}/{num_segments}: {start_time:.1f}s - {end_time:.1f}s")
+            if progress_callback:
+                # 计算ETA
+                if seg_idx > 0:
+                    elapsed = time.time() - segment_start_time
+                    avg_per_seg = elapsed / seg_idx
+                    remaining = avg_per_seg * (num_segments - seg_idx)
+                    if remaining >= 3600:
+                        eta_str = f"{int(remaining//3600)}小时{int((remaining%3600)//60)}分钟"
+                    elif remaining >= 60:
+                        eta_str = f"{int(remaining//60)}分{int(remaining%60)}秒"
+                    else:
+                        eta_str = f"{int(remaining)}秒"
+                else:
+                    eta_str = "计算中..."
+                progress_callback(f"处理切片 {seg_idx + 1}/{num_segments} ({start_time:.1f}s-{end_time:.1f}s)\n预计剩余: {eta_str}", 
+                                int(5 + 85 * seg_idx / num_segments))
+            
+            # 创建切片工作目录
+            seg_work_dir = segments_dir / f"seg_{seg_idx:04d}"
+            seg_frames_dir = seg_work_dir / "frames"
+            seg_processed_dir = seg_work_dir / "processed"
+            seg_frames_dir.mkdir(parents=True, exist_ok=True)
+            seg_processed_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 步骤1: 提取此切片的帧
+            frame_paths, actual_fps, error = extract_video_frames_segment(
+                temp_video_path,
+                seg_frames_dir,
+                start_time=start_time,
+                duration=seg_duration,
+                fps=extract_fps,
+                progress_callback=None  # 切片内不更新进度
+            )
+            
+            if error or not frame_paths:
+                log_info(f"[视频切片] 切片 {seg_idx + 1} 帧提取失败: {error}")
+                continue
+            
+            seg_frame_count = len(frame_paths)
+            log_info(f"[视频切片] 切片 {seg_idx + 1} 共 {seg_frame_count} 帧")
+            
+            # 步骤2: 超分处理此切片的帧
+            processed_frames = []
+            
+            # 使用批量处理模式
+            if (engine == 'anime4k' or use_batch_mode) and seg_frame_count > 0:
+                for batch_start in range(0, seg_frame_count, batch_size):
+                    if is_task_cancelled():
+                        return None, "[已取消] 任务被用户取消"
+                    
+                    batch_end = min(batch_start + batch_size, seg_frame_count)
+                    batch_frames = frame_paths[batch_start:batch_end]
+                    
+                    batch_output_dir = seg_processed_dir / f"batch_{batch_start}"
+                    batch_output_dir.mkdir(exist_ok=True)
+                    
+                    batch_input_paths = [Path(f) for f in batch_frames]
+                    successful, error = anime4k_batch_process(
+                        batch_input_paths,
+                        batch_output_dir,
+                        scale=scale,
+                        model=engine_params.get('model_name', 'acnet-gan'),
+                        processor=engine_params.get('processor', 'cuda'),
+                        device=engine_params.get('device', 0)
+                    )
+                    
+                    # 移动输出文件
+                    for j, batch_out in enumerate(sorted(batch_output_dir.glob("processed_*.png"))):
+                        actual_idx = batch_start + j
+                        final_path = seg_processed_dir / f"processed_{actual_idx:06d}.png"
+                        shutil.move(batch_out, final_path)
+                        processed_frames.append(str(final_path))
+                    
+                    try:
+                        batch_output_dir.rmdir()
+                    except:
+                        pass
+            else:
+                # 其他引擎逐帧处理
+                for i, frame_path in enumerate(frame_paths):
+                    if is_task_cancelled():
+                        return None, "[已取消] 任务被用户取消"
+                    
+                    output_path, msg = process_image(frame_path, actual_engine, **engine_params)
+                    ordered_frame_path = seg_processed_dir / f"processed_{i:06d}.png"
+                    
+                    if output_path and Path(output_path).exists():
+                        try:
+                            shutil.move(output_path, ordered_frame_path)
+                            processed_frames.append(str(ordered_frame_path))
+                        except Exception as e:
+                            shutil.copy2(frame_path, ordered_frame_path)
+                            processed_frames.append(str(ordered_frame_path))
+                    else:
+                        shutil.copy2(frame_path, ordered_frame_path)
+                        processed_frames.append(str(ordered_frame_path))
+            
+            # 步骤3: 合成此切片为视频（无音频）
+            seg_output_path = processed_segments_dir / f"seg_{seg_idx:04d}.{output_format}"
+            
+            # 确定编码器
+            seg_codec = codec
+            if output_format == "webm":
+                seg_codec = "libvpx-vp9"
+            elif output_format == "mkv" and codec == "libx264":
+                seg_codec = "libx265"
+            
+            success, msg = reassemble_video_full(
+                seg_processed_dir,
+                str(seg_output_path),
+                actual_fps if extract_fps is None else extract_fps,
+                "",  # 不需要原视频（不复制音轨）
+                audio_paths=None,
+                subtitle_paths=None,
+                codec=seg_codec,
+                crf=crf,
+                preset=preset,
+                copy_metadata=False,
+                progress_callback=None
+            )
+            
+            if success and seg_output_path.exists():
+                processed_segment_files.append(str(seg_output_path))
+                log_info(f"[视频切片] 切片 {seg_idx + 1} 处理完成")
+            else:
+                log_info(f"[视频切片] 切片 {seg_idx + 1} 合成失败: {msg}")
+            
+            # 清理帧文件以释放磁盘空间
+            try:
+                shutil.rmtree(seg_frames_dir, ignore_errors=True)
+                shutil.rmtree(seg_processed_dir, ignore_errors=True)
+            except:
+                pass
+        
+        # 步骤4: 合并所有切片
+        if not processed_segment_files:
+            return None, "[错误] 所有切片处理失败"
+        
+        if progress_callback:
+            progress_callback("正在合并切片视频...", 92)
+        
+        log_info(f"[视频切片] 合并 {len(processed_segment_files)} 个切片")
+        
+        # 使用 FFmpeg concat demuxer 合并切片
+        concat_list_file = work_dir / "concat_list.txt"
+        with open(concat_list_file, 'w', encoding='utf-8') as f:
+            for seg_file in processed_segment_files:
+                # 使用相对路径或转义路径
+                f.write(f"file '{seg_file}'\n")
+        
+        # 合并后的视频（无音频）
+        merged_video_path = work_dir / f"merged_video.{output_format}"
+        
+        concat_cmd = [
+            str(FFMPEG_EXE), "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_list_file),
+            "-c", "copy",
+            str(merged_video_path)
+        ]
+        
+        log_info(f"[视频切片] 执行合并命令")
+        concat_result = subprocess.run(concat_cmd, capture_output=True, timeout=1800)
+        
+        if concat_result.returncode != 0 or not merged_video_path.exists():
+            log_info(f"[视频切片] 合并失败: {concat_result.stderr.decode('utf-8', errors='ignore')}")
+            return None, "[错误] 切片合并失败"
+        
+        # 步骤5: 添加音轨和字幕
+        out_name = f"{video_file.stem}_{engine.upper()}_upscaled.{output_format}"
+        out_path = get_unique_path(out_name)
+        
+        if (keep_audio and audio_paths) or (keep_subtitles and subtitle_paths):
+            if progress_callback:
+                progress_callback("正在合并音轨和字幕...", 96)
+            
+            mux_cmd = [
+                str(FFMPEG_EXE), "-y",
+                "-i", str(merged_video_path),  # 合并后的视频
+                "-i", temp_video_path,          # 原视频（音轨/字幕源）
+                "-map", "0:v",                  # 使用处理后的视频轨
+            ]
+            
+            if keep_audio:
+                mux_cmd.extend(["-map", "1:a?"])
+            if keep_subtitles:
+                mux_cmd.extend(["-map", "1:s?"])
+            
+            mux_cmd.extend([
+                "-c:v", "copy",
+                "-c:a", "copy",
+                "-c:s", "copy",
+                str(out_path)
+            ])
+            
+            mux_result = subprocess.run(mux_cmd, capture_output=True, timeout=1800)
+            
+            if mux_result.returncode != 0 or not out_path.exists():
+                # 如果合并失败，直接使用无音轨版本
+                log_info("[视频切片] 音轨合并失败，使用无音轨版本")
+                shutil.copy2(merged_video_path, out_path)
+        else:
+            shutil.copy2(merged_video_path, out_path)
+        
+        if progress_callback:
+            progress_callback("处理完成!", 100)
+        
+        result_msg = f"[完成] 视频切片处理完成\n"
+        result_msg += f"原始: {info_dict['width']}x{info_dict['height']}\n"
+        result_msg += f"切片数: {num_segments}，切片时长: {segment_duration}秒\n"
+        result_msg += f"处理引擎: {engine.upper()}, 放大: {scale}x\n"
+        if audio_paths:
+            result_msg += f"包含 {len(audio_paths)} 个音轨\n"
+        if subtitle_paths:
+            result_msg += f"包含 {len(subtitle_paths)} 个字幕轨\n"
+        result_msg += f"保存至: {out_path.name}"
+        
+        return str(out_path), result_msg
+        
+    except Exception as e:
+        log_info(f"[视频切片] 处理异常: {e}")
+        return None, f"[错误] 视频切片处理异常: {e}"
+    
+    finally:
+        # 清理临时文件
+        try:
+            if work_dir.exists():
+                shutil.rmtree(work_dir, ignore_errors=True)
+        except Exception as e:
+            log_info(f"[视频切片] 清理临时文件失败: {e}")
+
+
+def process_video(
+    video_path: str,
+    engine: str,
+    output_format: str = "mp4",
+    codec: str = "libx264",
+    crf: int = 18,
+    preset: str = "medium",
+    keep_audio: bool = True,
+    keep_subtitles: bool = True,
+    extract_fps: Optional[float] = None,
+    progress_callback=None,
+    scale: int = 2,
+    denoise: int = -1,
+    target_resolution: Optional[Tuple[int, int]] = None,
+    **params
+) -> Tuple[Optional[str], str]:
+    """处理视频 - 逐帧超分后重组
+    
+    参数:
+        video_path: 输入视频路径
+        engine: 超分引擎 (anime4k, realcugan-pro, realcugan-se, realesrgan, realesrgan-anime, waifu2x)
+        output_format: 输出格式 (mp4/webm/mkv)
+        codec: 视频编码器 (libx264, libx265, libvpx-vp9)
+        crf: 质量参数 (0-51，越低质量越高)
+        preset: 编码速度预设 (ultrafast ~ veryslow)
+        keep_audio: 是否保留所有音轨
+        keep_subtitles: 是否保留所有字幕轨
+        extract_fps: 提取帧率，None 使用原始帧率
+        progress_callback: 进度回调函数 (message, percentage)
+        scale: 放大倍数 (2/3/4)
+        denoise: 降噪强度 (-1=不降噪, 0-3=降噪强度)
+        target_resolution: 目标分辨率 (width, height)，None=按倍数放大
+        extract_fps: 提取帧率，None 使用原始帧率
+        progress_callback: 进度回调函数 (message, percentage)
+        **params: 引擎参数
+    
+    返回: (输出路径, 状态消息)
+    """
+    # 重置任务控制器（开始新任务）
+    _task_controller.reset()
+    
+    if not FFMPEG_EXE.exists():
+        return None, "[错误] FFmpeg 未安装，无法处理视频"
+    
+    video_file = Path(video_path)
+    if not video_file.exists():
+        return None, "[错误] 视频文件不存在"
+    
+    # 创建临时目录
+    work_dir = TEMP_DIR / f"video_{uuid.uuid4().hex[:8]}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 处理中文文件名: 使用 Windows 短路径（8.3格式）避免复制
+    original_name = video_file.name
+    temp_video_path = video_path
+    has_non_ascii = any(ord(c) > 127 for c in str(video_file.absolute()))
+    if has_non_ascii:
+        try:
+            import ctypes
+            # 使用 Windows API 获取短路径
+            GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
+            GetShortPathNameW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+            GetShortPathNameW.restype = ctypes.c_uint
+            
+            long_path = str(video_file.absolute())
+            buf_size = GetShortPathNameW(long_path, None, 0)
+            if buf_size > 0:
+                buf = ctypes.create_unicode_buffer(buf_size)
+                GetShortPathNameW(long_path, buf, buf_size)
+                short_path = buf.value
+                if short_path and Path(short_path).exists():
+                    temp_video_path = short_path
+                    log_info(f"[视频] 使用短路径: {short_path}")
+                else:
+                    log_info(f"[视频] 短路径无效，使用原路径")
+            else:
+                log_info(f"[视频] 无法获取短路径，使用原路径")
+        except Exception as e:
+            log_info(f"[视频] 短路径获取失败: {e}，使用原路径")
+    
+    # 获取视频信息
+    info_dict = get_video_info(temp_video_path)
+    if not info_dict:
+        return None, "[错误] 无法获取视频信息"
+    
+    log_info(f"[视频] 开始处理: {original_name}")
+    log_info(f"[视频] 信息: {info_dict['width']}x{info_dict['height']}, {info_dict['fps']:.2f}fps, {info_dict['duration']:.1f}秒")
+    log_info(f"[视频] 音轨数: {info_dict.get('audio_count', 0)}, 字幕轨数: {info_dict.get('subtitle_count', 0)}")
+    
+    # ========== Anime4K 原生视频处理（极速模式）==========
+    # Anime4KCPP v3 支持直接处理视频，无需逐帧提取
+    # anime4k-builtin 将使用逐帧模式，跳过此原生处理
+    if engine == 'anime4k':
+        log_info("[视频] 使用 Anime4K 原生视频处理模式（极速）")
+        
+        # Anime4KCPP 视频模块不支持任何中文/非ASCII路径，使用统一的TEMP目录
+        anime4k_temp_dir = TEMP_DIR / f"a4k_{uuid.uuid4().hex[:8]}"
+        anime4k_temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 复制输入视频到纯英文路径
+        temp_input_name = f"input{video_file.suffix}"
+        anime4k_input_path = anime4k_temp_dir / temp_input_name
+        import shutil
+        shutil.copy2(video_path, anime4k_input_path)
+        log_info(f"[视频] 已复制到临时路径: {anime4k_temp_dir}")
+        
+        # 输出也使用纯英文路径
+        temp_output_name = f"output.{output_format}"
+        anime4k_output_path = anime4k_temp_dir / temp_output_name
+        
+        # 最终输出路径
+        out_name = f"{video_file.stem}_Anime4K_{scale}x.{output_format}"
+        out_path = get_unique_path(out_name)
+        
+        # 根据 CRF 估算比特率 (CRF 18 约等于 8000kbps for 1080p)
+        base_bitrate = 8000
+        if crf < 18:
+            bitrate = int(base_bitrate * (1.5 ** (18 - crf)))
+        else:
+            bitrate = int(base_bitrate / (1.2 ** (crf - 18)))
+        bitrate = max(1000, min(50000, bitrate))  # 限制范围
+        
+        # 映射编码器
+        encoder_map = {"libx264": "libx264", "libx265": "libx265", "libvpx-vp9": "libvpx"}
+        encoder = encoder_map.get(codec, "libx264")
+        
+        success, msg = anime4k_process_video_native(
+            input_path=str(anime4k_input_path),
+            output_path=str(anime4k_output_path),
+            scale=float(scale),
+            model=params.get('model_name', 'acnet-gan'),
+            processor=params.get('processor', 'cuda'),  # 使用用户选择的处理器
+            device=params.get('device', 0),
+            encoder=encoder,
+            bitrate=bitrate,
+            progress_callback=progress_callback
+        )
+        
+        # 处理成功后移动输出文件到最终位置
+        if success and anime4k_output_path.exists():
+            shutil.move(str(anime4k_output_path), str(out_path))
+            log_info(f"[视频] 输出文件已移动到: {out_path}")
+            
+            # 如果需要保留音轨/字幕，用 FFmpeg 合并
+            if (keep_audio and info_dict.get('audio_count', 0) > 0) or \
+               (keep_subtitles and info_dict.get('subtitle_count', 0) > 0):
+                log_info("[视频] 合并原始音轨和字幕...")
+                final_out = OUTPUT_DIR / f"{video_file.stem}_Anime4K_{scale}x_final.{output_format}"
+                
+                # 用 FFmpeg 合并
+                merge_cmd = [
+                    str(FFMPEG_EXE), "-y",
+                    "-i", str(out_path),           # 处理后的视频
+                    "-i", temp_video_path,         # 原始视频（音轨/字幕源）
+                    "-map", "0:v",                 # 使用处理后的视频轨
+                ]
+                
+                if keep_audio:
+                    merge_cmd.extend(["-map", "1:a?"])  # 使用原始音轨
+                if keep_subtitles:
+                    merge_cmd.extend(["-map", "1:s?"])  # 使用原始字幕
+                
+                merge_cmd.extend([
+                    "-c:v", "copy",    # 视频直接复制
+                    "-c:a", "copy",    # 音频直接复制
+                    "-c:s", "copy",    # 字幕直接复制
+                    str(final_out)
+                ])
+                
+                merge_result = subprocess.run(merge_cmd, capture_output=True, timeout=600)
+                if merge_result.returncode == 0 and final_out.exists():
+                    out_path.unlink()  # 删除中间文件
+                    out_path = final_out
+                    log_info("[视频] 音轨/字幕合并完成")
+            
+            if progress_callback:
+                progress_callback("处理完成!", 100)
+            
+            result_msg = f"[完成] Anime4K 原生视频处理\n"
+            result_msg += f"原始: {info_dict['width']}x{info_dict['height']}\n"
+            result_msg += f"输出: {info_dict['width']*scale}x{info_dict['height']*scale}\n"
+            result_msg += msg
+            
+            # 清理临时目录
+            try:
+                shutil.rmtree(anime4k_temp_dir, ignore_errors=True)
+                shutil.rmtree(work_dir, ignore_errors=True)
+            except:
+                pass
+            
+            return str(out_path), result_msg
+        else:
+            log_info(f"[视频] Anime4K 原生处理失败: {msg}，回退到逐帧模式")
+            # 清理 Anime4K 临时目录
+            try:
+                shutil.rmtree(anime4k_temp_dir, ignore_errors=True)
+            except:
+                pass
+            # 继续执行下面的逐帧处理
+    
+    # ========== 逐帧处理模式（其他引擎）==========
+    # 获取切片时长设置
+    segment_duration = params.pop('segment_duration', 15)  # 使用 pop 移除避免重复传递
+    video_duration = info_dict.get('duration', 0)
+    
+    # 判断是否需要切片处理（视频时长 > 切片时长，且切片时长 > 0）
+    if segment_duration > 0 and video_duration > segment_duration:
+        return process_video_segmented(
+            video_path=video_path,
+            temp_video_path=temp_video_path,
+            original_name=original_name,
+            work_dir=work_dir,
+            engine=engine,
+            output_format=output_format,
+            codec=codec,
+            crf=crf,
+            preset=preset,
+            keep_audio=keep_audio,
+            keep_subtitles=keep_subtitles,
+            extract_fps=extract_fps,
+            progress_callback=progress_callback,
+            scale=scale,
+            denoise=denoise,
+            target_resolution=target_resolution,
+            info_dict=info_dict,
+            segment_duration=segment_duration,
+            **params
+        )
+    
+    # ========== 非切片模式：原有逐帧处理逻辑 ==========
+    frames_dir = work_dir / "frames"
+    processed_dir = work_dir / "processed"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    
+    audio_paths: List[str] = []
+    subtitle_paths: List[str] = []
+    
+    try:
+        # 步骤1: 提取音轨和字幕
+        if progress_callback:
+            progress_callback("正在提取音轨和字幕...", 0)
+        
+        main_audio, audio_paths, subtitle_paths, error = extract_all_streams(
+            temp_video_path, work_dir, keep_audio, keep_subtitles, progress_callback
+        )
+        
+        if audio_paths:
+            log_info(f"[视频] 提取了 {len(audio_paths)} 个音轨")
+        if subtitle_paths:
+            log_info(f"[视频] 提取了 {len(subtitle_paths)} 个字幕轨")
+        
+        # 步骤2: 提取帧
+        if progress_callback:
+            progress_callback("正在提取视频帧...", None)
+        
+        frame_paths, fps, error = extract_video_frames(
+            temp_video_path, 
+            frames_dir,
+            fps=extract_fps,
+            progress_callback=progress_callback
+        )
+        
+        if error or not frame_paths:
+            return None, f"[错误] {error or '帧提取失败'}"
+        
+        total_frames = len(frame_paths)
+        log_info(f"[视频] 共 {total_frames} 帧需要处理")
+        
+        # 创建进度文件用于断点续传
+        progress_file = work_dir / "progress.json"
+        video_progress = VideoProgress(
+            video_path=video_path,
+            work_dir=str(work_dir),
+            engine=engine,
+            scale=scale,
+            denoise=denoise,
+            total_frames=total_frames,
+            processed_count=0,
+            fps=fps,
+            audio_paths=audio_paths,
+            subtitle_paths=subtitle_paths,
+            output_format=output_format,
+            codec=codec,
+            crf=crf,
+            preset=preset
+        )
+        
+        # 检查是否有已处理的帧（断点续传）
+        existing_processed = sorted(processed_dir.glob("processed_*.png"))
+        start_index = len(existing_processed)
+        if start_index > 0:
+            log_info(f"[视频] 检测到已处理 {start_index} 帧，从第 {start_index+1} 帧继续")
+            video_progress.processed_count = start_index
+        
+        # 步骤3: 超分处理
+        # 构建引擎参数
+        engine_params = dict(params)  # 复制额外参数
+        engine_params['scale'] = scale
+        if denoise >= 0:
+            engine_params['denoise'] = denoise
+        # GPU 加速优先级: CUDA > OpenCL > CPU
+        processor = 'cuda'  # 默认 CUDA
+        
+        # 处理 anime4k-builtin，将其映射为 anime4k 引擎
+        actual_engine = engine
+        use_batch_mode = False  # 是否使用批量处理模式
+        if engine == 'anime4k-builtin':
+            actual_engine = 'anime4k'
+            use_batch_mode = True
+            log_info("[视频] 使用 AIS 内置模式（批量处理 + FFmpeg 编码）")
+        
+        if actual_engine == 'anime4k':
+            engine_params.setdefault('processor', processor)
+        
+        processed_frames: List[str] = [str(p) for p in existing_processed]  # 已有的帧
+        remaining_frames = frame_paths[start_index:]
+        
+        # ETA计算：记录处理开始时间
+        import time
+        frame_process_start_time = time.time()
+        
+        # 获取批量处理帧数设置（默认100帧）
+        batch_size = params.get('batch_size', 100)
+        log_info(f"[处理] 批量帧数: {batch_size}")
+        
+        # Anime4K 和 anime4k-builtin 都使用批量处理模式（避免重复初始化 GPU）
+        if (engine == 'anime4k' or use_batch_mode) and len(remaining_frames) > 0:
+            log_info(f"[视频] 使用 Anime4K 批量处理模式 (每批 {batch_size} 帧)")
+            
+            # 分批处理
+            batch_count = 0
+            for batch_start in range(0, len(remaining_frames), batch_size):
+                # 检查是否已取消
+                if is_task_cancelled():
+                    log_info("[视频] 任务已取消")
+                    video_progress.save(progress_file)  # 保存当前进度
+                    return None, "[已取消] 任务被用户取消，进度已保存"
+                
+                batch_end = min(batch_start + batch_size, len(remaining_frames))
+                batch_frames = remaining_frames[batch_start:batch_end]
+                actual_start = start_index + batch_start
+                actual_end = actual_start + len(batch_frames)
+                
+                # 创建临时批量输出目录
+                batch_output_dir = processed_dir / f"batch_{batch_start}"
+                batch_output_dir.mkdir(exist_ok=True)
+                
+                # 批量处理
+                batch_input_paths = [Path(f) for f in batch_frames]
+                successful, error = anime4k_batch_process(
+                    batch_input_paths,
+                    batch_output_dir,
+                    scale=scale,
+                    model=engine_params.get('model_name', 'acnet-gan'),
+                    processor=processor,
+                    device=engine_params.get('device', 0)
+                )
+                
+                # 移动输出文件到正确位置
+                import shutil
+                for j, batch_out in enumerate(sorted(batch_output_dir.glob("processed_*.png"))):
+                    actual_idx = actual_start + j
+                    final_path = processed_dir / f"processed_{actual_idx:06d}.png"
+                    shutil.move(batch_out, final_path)
+                    processed_frames.append(str(final_path))
+                
+                # 清理批量目录
+                try:
+                    batch_output_dir.rmdir()
+                except:
+                    pass
+                
+                # 更新进度
+                video_progress.processed_count = actual_start + len(batch_frames)
+                video_progress.save(progress_file)
+                batch_count += 1
+                
+                # 批次完成后报告进度（ETA在处理完一批后才准确）
+                if progress_callback:
+                    # 计算进度百分比（帧处理阶段占 10%-90%）
+                    frame_pct = actual_end / total_frames * 100
+                    overall_pct = 10 + int(80 * actual_end / total_frames)
+                    # 计算ETA（至少完成一批后才计算）
+                    elapsed = time.time() - frame_process_start_time
+                    processed_in_session = actual_end - start_index
+                    if batch_count >= 1 and processed_in_session > 0:
+                        remaining_frames_count = len(remaining_frames) - processed_in_session
+                        avg_time_per_frame = elapsed / processed_in_session
+                        eta_seconds = avg_time_per_frame * remaining_frames_count
+                        if eta_seconds >= 3600:
+                            eta_str = f"{int(eta_seconds//3600)}小时{int((eta_seconds%3600)//60)}分钟"
+                        elif eta_seconds >= 60:
+                            eta_str = f"{int(eta_seconds//60)}分{int(eta_seconds%60)}秒"
+                        else:
+                            eta_str = f"{int(eta_seconds)}秒"
+                    else:
+                        eta_str = "计算中..."
+                    # 日志格式：显示当前批次帧范围、总进度、ETA
+                    progress_msg = f"处理帧 {actual_start+1}-{actual_end}/{total_frames} ({frame_pct:.1f}%)\n预计剩余: {eta_str}"
+                    progress_callback(progress_msg, overall_pct)
+        else:
+            # 其他引擎逐帧处理
+            for i in range(start_index, total_frames):
+                # 检查是否已取消
+                if is_task_cancelled():
+                    log_info("[视频] 任务已取消")
+                    video_progress.processed_count = i
+                    video_progress.save(progress_file)  # 保存当前进度
+                    return None, "[已取消] 任务被用户取消，进度已保存"
+                
+                # 内存检查 (每50帧检查一次)
+                if i % 50 == 0:
+                    mem_usage, mem_used, mem_total = check_memory_usage()
+                    if mem_usage > 95:
+                        log_info(f"[警告] 内存严重不足 ({mem_usage:.1f}%)，暂停处理")
+                        video_progress.processed_count = i
+                        video_progress.save(progress_file)
+                        return None, f"[内存不足] 内存使用率 {mem_usage:.1f}%，已保存进度，请释放内存后继续"
+                    elif mem_usage > 85:
+                        log_info(f"[警告] 内存使用率较高 ({mem_usage:.1f}%)")
+                
+                frame_path = frame_paths[i]
+                if progress_callback:
+                    pct = 10 + int(80 * (i + 1) / total_frames)
+                    # 计算ETA
+                    elapsed = time.time() - frame_process_start_time
+                    processed_in_session = i + 1 - start_index
+                    eta_str = calculate_eta_from_progress(processed_in_session, total_frames - start_index, elapsed)
+                    progress_msg = f"正在处理帧 {i+1}/{total_frames} ({(pct-10):.1f}%)\n预计剩余: {eta_str}"
+                    progress_callback(progress_msg, pct)
+                
+                # 处理单帧
+                output_path, msg = process_image(frame_path, actual_engine, **engine_params)
+                
+                ordered_frame_path = processed_dir / f"processed_{i:06d}.png"
+                if output_path and Path(output_path).exists():
+                    # 移动处理后的帧到临时目录（比复制更快）
+                    try:
+                        import shutil
+                        shutil.move(output_path, ordered_frame_path)
+                        processed_frames.append(str(ordered_frame_path))
+                    except Exception as e:
+                        log_info(f"[视频] 帧 {i+1} 移动失败: {e}")
+                        shutil.copy2(frame_path, ordered_frame_path)
+                        processed_frames.append(str(ordered_frame_path))
+                else:
+                    log_info(f"[视频] 帧 {i+1} 处理失败，使用原帧")
+                    import shutil
+                    shutil.copy2(frame_path, ordered_frame_path)
+                    processed_frames.append(str(ordered_frame_path))
+                
+                # 更新进度文件（每10帧保存一次）
+                if (i + 1) % 10 == 0 or i == total_frames - 1:
+                    video_progress.processed_count = i + 1
+                    video_progress.save(progress_file)
+        
+        # 步骤4: 合成视频
+        if progress_callback:
+            progress_callback("正在合成视频...", 92)
+        
+        # 确定输出路径
+        out_name = f"{video_file.stem}_{engine.upper()}_upscaled.{output_format}"
+        out_path = get_unique_path(out_name)
+        
+        # 确定编码器
+        if output_format == "webm":
+            codec = "libvpx-vp9"
+        elif output_format == "mkv" and codec == "libx264":
+            codec = "libx265"  # MKV 用 H.265 更好
+        
+        success, msg = reassemble_video_full(
+            processed_dir,
+            str(out_path),
+            fps if extract_fps is None else extract_fps,
+            temp_video_path,  # 使用临时路径（处理过中文文件名）
+            audio_paths=audio_paths if keep_audio else None,
+            subtitle_paths=subtitle_paths if keep_subtitles else None,
+            codec=codec,
+            crf=crf,
+            preset=preset,
+            copy_metadata=True,
+            progress_callback=progress_callback
+        )
+        
+        if success:
+            if progress_callback:
+                progress_callback("处理完成!", 100)
+            
+            result_msg = f"[完成] 视频处理完成\n"
+            result_msg += f"原始: {info_dict['width']}x{info_dict['height']}\n"
+            result_msg += f"共处理 {total_frames} 帧\n"
+            if audio_paths:
+                result_msg += f"包含 {len(audio_paths)} 个音轨\n"
+            if subtitle_paths:
+                result_msg += f"包含 {len(subtitle_paths)} 个字幕轨\n"
+            result_msg += f"保存至: {out_path.name}"
+            
+            return str(out_path), result_msg
+        else:
+            return None, f"[错误] {msg}"
+    
+    except Exception as e:
+        log_info(f"[视频] 处理异常: {e}")
+        return None, f"[错误] 视频处理异常: {e}"
+    
+    finally:
+        # 清理临时文件
+        try:
+            import shutil
+            if work_dir.exists():
+                shutil.rmtree(work_dir)
+        except Exception as e:
+            log_info(f"[视频] 清理临时文件失败: {e}")
+
+
+def get_supported_video_formats() -> List[str]:
+    """获取支持的视频格式"""
+    return ["mp4", "webm", "mkv", "avi", "mov", "flv", "wmv", "m4v"]
+
+
+def is_video_file(file_path: str) -> bool:
+    """检查是否为视频文件"""
+    if not file_path:
+        return False
+    suffix = Path(file_path).suffix.lower().lstrip('.')
+    return suffix in get_supported_video_formats()
 
 
 # ============================================================
@@ -2370,7 +4521,7 @@ def create_ui() -> gr.Blocks:
                             quick_btn = gr.Button(t("start_process"), variant="primary", scale=2)
                             quick_all_btn = gr.Button(t("process_all"), variant="secondary", scale=1)
                         
-                        quick_status = gr.Textbox(label=t("status"), lines=6, interactive=False)
+                        quick_status = gr.Textbox(label=t("video_log"), lines=10, max_lines=15, interactive=False)
                         
                     with gr.Column(scale=2, min_width=500):
                         gr.Markdown(f"### {t('compare_title')}")
@@ -2753,7 +4904,19 @@ def create_ui() -> gr.Blocks:
                                 
                                 anime4k_btn = gr.Button("🚀 " + t("start_process"), variant="primary", elem_classes=["mobile-friendly-btn"])
                         
-                        custom_status = gr.Textbox(label=t("status"), lines=4, interactive=False)
+                        custom_status = gr.Textbox(label=t("video_log"), lines=8, max_lines=12, interactive=False, autoscroll=True)
+                        
+                        # 添加Timer用于实时日志更新
+                        custom_log_timer = gr.Timer(value=0.5, active=True)
+                        
+                        def poll_custom_logs():
+                            """轮询实时日志"""
+                            return _realtime_log.get_all()
+                        
+                        custom_log_timer.tick(
+                            fn=poll_custom_logs,
+                            outputs=[custom_status]
+                        )
                         
                         # 预设管理
                         with gr.Accordion(t("preset_manage"), open=False):
@@ -2806,16 +4969,27 @@ def create_ui() -> gr.Blocks:
                     else:
                         return process_image(input_path, engine, **params)
                 
-                # 各引擎处理函数 - 支持完整参数和GIF
+                # 各引擎处理函数 - 支持完整参数和GIF，使用全局实时日志
                 def process_cugan(img, gif_fmt, model, scale, denoise, syncgap, tile, tta, gpu, threads, fmt):
+                    _realtime_log.clear()
+                    _realtime_log.set_processing(True)
+                    
                     if img is None:
-                        return None, None, "[错误] 请先上传图片"
+                        _realtime_log.add("[错误] 请先上传图片")
+                        _realtime_log.set_processing(False)
+                        return None, None, _realtime_log.get_all()
+                    
+                    _realtime_log.add("开始处理...")
+                    _realtime_log.add(f"引擎: Real-CUGAN")
                     model_key = "Pro" if "Pro" in model else "SE"
                     denoise_map = {"无降噪": -1, "保守降噪": 0, "强力降噪": 3}
+                    denoise_val = denoise_map.get(denoise, 0)
+                    _realtime_log.add(f"参数: model={model_key}, scale={scale}, denoise={denoise_val}")
+                    
                     output, msg = process_smart(
                         img, "cugan", gif_fmt,
                         scale=int(scale),
-                        denoise=denoise_map.get(denoise, 0),
+                        denoise=denoise_val,
                         model=model_key,
                         syncgap=int(syncgap),
                         tile_size=int(tile),
@@ -2824,13 +4998,28 @@ def create_ui() -> gr.Blocks:
                         threads=threads,
                         output_format=fmt
                     )
+                    if msg:
+                        for line in msg.split('\n'):
+                            if line.strip(): _realtime_log.add(line.strip())
+                    _realtime_log.set_processing(False)
                     if output:
-                        return output, (img, output), msg
-                    return None, None, msg
+                        _realtime_log.add(f"[完成] 输出: {Path(output).name}")
+                        return output, (img, output), _realtime_log.get_all()
+                    return None, None, _realtime_log.get_all()
                 
                 def process_esrgan(img, gif_fmt, model_name, scale, tile, tta, gpu, threads, fmt):
+                    _realtime_log.clear()
+                    _realtime_log.set_processing(True)
+                    
                     if img is None:
-                        return None, None, "[错误] 请先上传图片"
+                        _realtime_log.add("[错误] 请先上传图片")
+                        _realtime_log.set_processing(False)
+                        return None, None, _realtime_log.get_all()
+                    
+                    _realtime_log.add("开始处理...")
+                    _realtime_log.add(f"引擎: Real-ESRGAN")
+                    _realtime_log.add(f"参数: model={model_name}, scale={scale}")
+                    
                     output, msg = process_smart(
                         img, "esrgan", gif_fmt,
                         scale=int(scale),
@@ -2841,13 +5030,28 @@ def create_ui() -> gr.Blocks:
                         threads=threads,
                         output_format=fmt
                     )
+                    if msg:
+                        for line in msg.split('\n'):
+                            if line.strip(): _realtime_log.add(line.strip())
+                    _realtime_log.set_processing(False)
                     if output:
-                        return output, (img, output), msg
-                    return None, None, msg
+                        _realtime_log.add(f"[完成] 输出: {Path(output).name}")
+                        return output, (img, output), _realtime_log.get_all()
+                    return None, None, _realtime_log.get_all()
                 
                 def process_waifu(img, gif_fmt, model_type, scale, denoise, tile, tta, gpu, threads, fmt):
+                    _realtime_log.clear()
+                    _realtime_log.set_processing(True)
+                    
                     if img is None:
-                        return None, None, "[错误] 请先上传图片"
+                        _realtime_log.add("[错误] 请先上传图片")
+                        _realtime_log.set_processing(False)
+                        return None, None, _realtime_log.get_all()
+                    
+                    _realtime_log.add("开始处理...")
+                    _realtime_log.add(f"引擎: Waifu2x")
+                    _realtime_log.add(f"参数: model={model_type}, scale={scale}, denoise={denoise}")
+                    
                     output, msg = process_smart(
                         img, "waifu2x", gif_fmt,
                         scale=int(scale),
@@ -2859,13 +5063,28 @@ def create_ui() -> gr.Blocks:
                         threads=threads,
                         output_format=fmt
                     )
+                    if msg:
+                        for line in msg.split('\n'):
+                            if line.strip(): _realtime_log.add(line.strip())
+                    _realtime_log.set_processing(False)
                     if output:
-                        return output, (img, output), msg
-                    return None, None, msg
+                        _realtime_log.add(f"[完成] 输出: {Path(output).name}")
+                        return output, (img, output), _realtime_log.get_all()
+                    return None, None, _realtime_log.get_all()
                 
                 def process_anime4k(img, gif_fmt, model, factor, processor, device, fmt):
+                    _realtime_log.clear()
+                    _realtime_log.set_processing(True)
+                    
                     if img is None:
-                        return None, None, "[错误] 请先上传图片"
+                        _realtime_log.add("[错误] 请先上传图片")
+                        _realtime_log.set_processing(False)
+                        return None, None, _realtime_log.get_all()
+                    
+                    _realtime_log.add("开始处理...")
+                    _realtime_log.add(f"引擎: Anime4K")
+                    _realtime_log.add(f"参数: model={model}, scale={factor}, processor={processor}")
+                    
                     output, msg = process_smart(
                         img, "anime4k", gif_fmt,
                         scale=int(factor),
@@ -2874,9 +5093,13 @@ def create_ui() -> gr.Blocks:
                         device=int(device) if device else 0,
                         output_format=fmt
                     )
+                    if msg:
+                        for line in msg.split('\n'):
+                            if line.strip(): _realtime_log.add(line.strip())
                     if output:
-                        return output, (img, output), msg
-                    return None, None, msg
+                        _realtime_log.add(f"[完成] 输出: {Path(output).name}")
+                        return output, (img, output), _realtime_log.get_all()
+                    return None, None, _realtime_log.get_all()
                 
                 cugan_btn.click(
                     fn=process_cugan,
@@ -3072,6 +5295,872 @@ def create_ui() -> gr.Blocks:
                     outputs=[preset_manage_status, saved_presets_dropdown]
                 )
             
+            # 视频处理标签页 (Beta)
+            with gr.Tab(t("tab_video")):
+                gr.Markdown(f"### {t('tab_video')}")
+                gr.Markdown(t("video_desc"))
+                
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        # 视频上传
+                        video_input = gr.Video(
+                            label=t("upload_video"),
+                            sources=["upload"],
+                        )
+                        
+                        # 显示视频信息
+                        video_info_display = gr.Textbox(
+                            label=t("status"),
+                            value="",
+                            interactive=False,
+                            lines=4
+                        )
+                        
+                        # 引擎选择 - 基于 SVFI 文档分类
+                        # 动漫素材：Anime4K(极速), RealCUGAN(保守), ncnnCugan(兼容), waifu2x(经典)
+                        # 通用素材：RealESRGAN, RealESRNet
+                        video_engine_choices = [
+                            t("video_engine_anime4k"),
+                            t("video_engine_realcugan_pro"),
+                            t("video_engine_realcugan_se"),
+                            t("video_engine_realesrgan_anime"),
+                            t("video_engine_waifu2x"),
+                            t("video_engine_realesrgan"),
+                        ]
+                        video_engine = gr.Dropdown(
+                            label=t("video_engine"),
+                            choices=video_engine_choices,
+                            value=video_engine_choices[0],  # 默认 Anime4K
+                            interactive=True,
+                            info=t("video_engine_info")
+                        )
+                        
+                        # 超分模型设置
+                        with gr.Accordion(t("video_sr_settings"), open=False):
+                            # 放大倍数
+                            video_scale = gr.Dropdown(
+                                label=t("video_scale"),
+                                choices=["2x", "3x", "4x"],
+                                value="2x",
+                                info=t("video_scale_info")
+                            )
+                            
+                            # 降噪强度 (RealCUGAN/waifu2x)
+                            video_denoise = gr.Dropdown(
+                                label=t("video_denoise"),
+                                choices=[
+                                    t("video_denoise_none"),
+                                    t("video_denoise_light"),
+                                    t("video_denoise_medium"),
+                                    t("video_denoise_strong"),
+                                    t("video_denoise_max"),
+                                ],
+                                value=t("video_denoise_none"),
+                                info=t("video_denoise_info")
+                            )
+                            
+                            # 输出分辨率预设
+                            video_output_resolution = gr.Dropdown(
+                                label=t("video_output_resolution"),
+                                choices=[
+                                    t("video_res_auto"),
+                                    t("video_res_1080p"),
+                                    t("video_res_2k"),
+                                    t("video_res_4k"),
+                                    t("video_res_custom"),
+                                ],
+                                value=t("video_res_auto"),
+                                info=t("video_output_resolution_info")
+                            )
+                            
+                            # 自定义分辨率 (Row 需要在 Accordion 内)
+                            video_custom_row = gr.Row(visible=False)
+                            with video_custom_row:
+                                video_custom_width = gr.Number(
+                                    label=t("video_custom_width"),
+                                    value=1920,
+                                    precision=0,
+                                    minimum=64,
+                                    maximum=7680
+                                )
+                                video_custom_height = gr.Number(
+                                    label=t("video_custom_height"),
+                                    value=1080,
+                                    precision=0,
+                                    minimum=64,
+                                    maximum=4320
+                                )
+                            
+                            # 分辨率联动 - 控制整个 Row 的显隐
+                            def toggle_custom_resolution(res):
+                                is_custom = t("video_res_custom") in res or "Custom" in res
+                                return gr.update(visible=is_custom)
+                            
+                            video_output_resolution.change(
+                                fn=toggle_custom_resolution,
+                                inputs=[video_output_resolution],
+                                outputs=[video_custom_row]
+                            )
+                            
+                            # 视频切片时长（避免大视频内存溢出）
+                            video_segment_duration = gr.Slider(
+                                label=t("video_segment_duration"),
+                                minimum=0,
+                                maximum=60,
+                                step=5,
+                                value=15,
+                                info=t("video_segment_duration_info")
+                            )
+                        
+                        # 引擎特定设置
+                        with gr.Accordion(t("video_engine_settings"), open=False):
+                            # Anime4K 设置
+                            with gr.Group(visible=True) as video_a4k_group:
+                                # 处理模式选择
+                                video_a4k_mode = gr.Radio(
+                                    label=t("video_a4k_mode"),
+                                    choices=[
+                                        t("video_a4k_mode_native"),
+                                        t("video_a4k_mode_builtin"),
+                                    ],
+                                    value=t("video_a4k_mode_builtin"),  # 默认使用 AIS 内置模式
+                                    info=t("video_a4k_mode_builtin_info")
+                                )
+                                # 模式说明
+                                video_a4k_mode_info = gr.Markdown(
+                                    value=f"""**{t("video_a4k_mode_native")}**: {t("video_a4k_mode_native_info")}
+
+**{t("video_a4k_mode_builtin")}**: {t("video_a4k_mode_builtin_info")}""",
+                                    visible=True
+                                )
+                                # 批量处理帧数（仅 AIS 内置模式生效）
+                                video_a4k_batch_size = gr.Slider(
+                                    label=t("video_a4k_batch_size"),
+                                    minimum=10,
+                                    maximum=500,
+                                    step=10,
+                                    value=100,
+                                    info=t("video_a4k_batch_size_info"),
+                                    visible=True  # 默认显示（因为默认是内置模式）
+                                )
+                                video_a4k_model = gr.Dropdown(
+                                    label=t("video_a4k_model"),
+                                    choices=[
+                                        t("video_a4k_model_acnet"),
+                                        t("video_a4k_model_acnet_gan"),
+                                    ],
+                                    value=t("video_a4k_model_acnet"),
+                                )
+                                video_a4k_processor = gr.Dropdown(
+                                    label=t("video_a4k_processor"),
+                                    choices=[
+                                        t("video_a4k_processor_cuda"),
+                                        t("video_a4k_processor_opencl"),
+                                        t("video_a4k_processor_cpu"),
+                                    ],
+                                    value=t("video_a4k_processor_cuda"),
+                                )
+                                video_a4k_device = gr.Number(
+                                    label=t("video_a4k_device"),
+                                    value=0,
+                                    precision=0,
+                                    minimum=0,
+                                    maximum=7
+                                )
+                                # 原生模式警告
+                                video_native_warning = gr.Markdown(
+                                    value=f"### {t('video_native_mode_warning')}",
+                                    visible=False  # 默认隐藏（因为默认是内置模式）
+                                )
+                            
+                            # RealCUGAN 设置
+                            with gr.Group(visible=False) as video_cugan_group:
+                                video_cugan_model = gr.Dropdown(
+                                    label=t("video_cugan_model"),
+                                    choices=[
+                                        t("video_cugan_model_pro"),
+                                        t("video_cugan_model_se"),
+                                        t("video_cugan_model_nose"),
+                                    ],
+                                    value=t("video_cugan_model_pro"),
+                                )
+                                video_cugan_syncgap = gr.Number(
+                                    label=t("video_cugan_syncgap"),
+                                    value=3,
+                                    precision=0,
+                                    minimum=0,
+                                    maximum=10,
+                                    info=t("video_cugan_syncgap_info")
+                                )
+                            
+                            # RealESRGAN 设置
+                            with gr.Group(visible=False) as video_esrgan_group:
+                                video_esrgan_model = gr.Dropdown(
+                                    label=t("video_esrgan_model"),
+                                    choices=[
+                                        t("video_esrgan_model_anime"),
+                                        t("video_esrgan_model_x4plus"),
+                                        t("video_esrgan_model_anime_x4plus"),
+                                    ],
+                                    value=t("video_esrgan_model_anime"),
+                                )
+                                video_esrgan_tta = gr.Checkbox(
+                                    label=t("video_esrgan_tta"),
+                                    value=False,
+                                    info=t("video_esrgan_tta_info")
+                                )
+                            
+                            # Waifu2x 设置
+                            with gr.Group(visible=False) as video_waifu2x_group:
+                                video_waifu2x_model = gr.Dropdown(
+                                    label=t("video_waifu2x_model"),
+                                    choices=[
+                                        t("video_waifu2x_model_cunet"),
+                                        t("video_waifu2x_model_anime"),
+                                        t("video_waifu2x_model_photo"),
+                                    ],
+                                    value=t("video_waifu2x_model_cunet"),
+                                )
+                                video_waifu2x_tta = gr.Checkbox(
+                                    label=t("video_waifu2x_tta"),
+                                    value=False,
+                                    info=t("video_waifu2x_tta_info")
+                                )
+                            
+                            # 通用 GPU 设备选择
+                            video_gpu_device = gr.Number(
+                                label=t("video_gpu_device"),
+                                value=0,
+                                precision=0,
+                                minimum=-1,
+                                maximum=7,
+                                info=t("video_gpu_device_info")
+                            )
+                            
+                            # 引擎联动 - 控制设置组的显隐
+                            def toggle_engine_settings(engine):
+                                is_a4k = "Anime4K" in engine
+                                is_cugan = "RealCUGAN" in engine or "CUGAN" in engine
+                                is_esrgan = "RealESRGAN" in engine or "ESRGAN" in engine
+                                is_waifu2x = "waifu2x" in engine
+                                return (
+                                    gr.update(visible=is_a4k),
+                                    gr.update(visible=is_cugan),
+                                    gr.update(visible=is_esrgan and not "Anime" in engine),  # 通用 ESRGAN
+                                    gr.update(visible=is_waifu2x)
+                                )
+                            
+                            video_engine.change(
+                                fn=toggle_engine_settings,
+                                inputs=[video_engine],
+                                outputs=[video_a4k_group, video_cugan_group, video_esrgan_group, video_waifu2x_group]
+                            )
+                            
+                            # Anime4K 模式切换 - 控制警告显示、批量帧数设置和编码设置
+                            def toggle_a4k_mode(mode):
+                                is_native = t("video_a4k_mode_native") in mode or "Native" in mode
+                                # 原生模式：显示警告，隐藏批量帧数
+                                # 内置模式：隐藏警告，显示批量帧数
+                                return gr.update(visible=is_native), gr.update(visible=not is_native)
+                            
+                            video_a4k_mode.change(
+                                fn=toggle_a4k_mode,
+                                inputs=[video_a4k_mode],
+                                outputs=[video_native_warning, video_a4k_batch_size]
+                            )
+                        
+                        # 视频处理预设
+                        video_preset_templates = gr.Dropdown(
+                            label=t("video_preset_template"),
+                            choices=[
+                                t("video_preset_custom"),
+                                t("video_preset_fast"),
+                                t("video_preset_balanced"),
+                                t("video_preset_hq"),
+                                t("video_preset_ultra"),
+                            ],
+                            value=t("video_preset_custom"),
+                            info=t("video_preset_template_info")
+                        )
+                        
+                        # 输出设置
+                        with gr.Accordion(t("advanced_params"), open=True):
+                            # 输出格式
+                            video_output_format = gr.Dropdown(
+                                label=t("video_output_format"),
+                                choices=["mp4", "mkv", "webm"],
+                                value="mp4",
+                                info=t("video_output_format_info")
+                            )
+                            
+                            # 视频编码器选择
+                            video_codec = gr.Dropdown(
+                                label=t("video_codec"),
+                                choices=[
+                                    t("video_codec_h264"),
+                                    t("video_codec_h265"),
+                                    t("video_codec_vp9"),
+                                ],
+                                value=t("video_codec_h264"),
+                                info=t("video_codec_info")
+                            )
+                            
+                            # 压缩质量
+                            video_crf = gr.Slider(
+                                label=t("video_crf"),
+                                minimum=0,
+                                maximum=51,
+                                value=18,
+                                step=1,
+                                info=t("video_crf_info")
+                            )
+                            
+                            # 编码速度预设 - 中文化
+                            video_preset_choice = gr.Dropdown(
+                                label=t("video_preset"),
+                                choices=[
+                                    t("video_speed_ultrafast"),
+                                    t("video_speed_superfast"),
+                                    t("video_speed_veryfast"),
+                                    t("video_speed_faster"),
+                                    t("video_speed_fast"),
+                                    t("video_speed_medium"),
+                                    t("video_speed_slow"),
+                                    t("video_speed_slower"),
+                                    t("video_speed_veryslow"),
+                                ],
+                                value=t("video_speed_medium"),
+                                info=t("video_preset_info")
+                            )
+                            
+                            # 音轨和字幕选项
+                            with gr.Row():
+                                video_keep_audio = gr.Checkbox(
+                                    label=t("video_keep_audio"),
+                                    value=True
+                                )
+                                video_keep_subtitles = gr.Checkbox(
+                                    label=t("video_keep_subtitles"),
+                                    value=True
+                                )
+                            
+                            # 自定义帧率
+                            video_fps_override = gr.Number(
+                                label=t("video_fps_override"),
+                                value=None,
+                                precision=2,
+                                info=t("video_fps_info")
+                            )
+                        
+                        with gr.Row():
+                            # 开始处理按钮
+                            video_process_btn = gr.Button(
+                                t("video_start_process"),
+                                variant="primary",
+                                size="lg"
+                            )
+                            # 取消按钮
+                            video_cancel_btn = gr.Button(
+                                t("video_cancel"),
+                                variant="stop",
+                                size="lg"
+                            )
+                    
+                    with gr.Column(scale=1):
+                        # 实时进度显示
+                        video_progress = gr.Textbox(
+                            label=t("video_progress"),
+                            value="",
+                            interactive=False,
+                            lines=8,
+                            max_lines=8,
+                            autoscroll=True
+                        )
+                        
+                        # 实时日志（命令行输出）- 固定高度
+                        video_status = gr.Textbox(
+                            label=t("video_log"),
+                            value="",
+                            interactive=False,
+                            lines=15,
+                            max_lines=15,
+                            autoscroll=True
+                        )
+                        
+                        # 输出视频预览
+                        video_output = gr.Video(
+                            label=t("video_result"),
+                            interactive=False
+                        )
+                        
+                        # 下载文件
+                        video_download = gr.File(
+                            label=t("video_download"),
+                            visible=True
+                        )
+                
+                # 视频上传时显示信息
+                def on_video_upload(video_path):
+                    if video_path is None:
+                        return ""
+                    try:
+                        # 获取完整视频信息
+                        info_full = get_video_info_full(video_path)
+                        if info_full:
+                            duration = info_full.duration
+                            fps = info_full.fps
+                            frame_count = info_full.total_frames
+                            audio_count = info_full.audio_count
+                            subtitle_count = info_full.subtitle_count
+                            
+                            # 获取文件大小
+                            file_size_bytes = Path(video_path).stat().st_size
+                            if file_size_bytes >= 1024 * 1024 * 1024:
+                                file_size_str = f"{file_size_bytes / (1024*1024*1024):.2f} GB"
+                            elif file_size_bytes >= 1024 * 1024:
+                                file_size_str = f"{file_size_bytes / (1024*1024):.2f} MB"
+                            else:
+                                file_size_str = f"{file_size_bytes / 1024:.2f} KB"
+                            
+                            # 比特率格式化
+                            bit_rate = info_full.bit_rate
+                            if bit_rate >= 1000000:
+                                bitrate_str = f"{bit_rate / 1000000:.2f} Mbps"
+                            elif bit_rate >= 1000:
+                                bitrate_str = f"{bit_rate / 1000:.0f} Kbps"
+                            else:
+                                bitrate_str = f"{bit_rate} bps" if bit_rate > 0 else "N/A"
+                            
+                            # 基础信息
+                            info_text = t("video_info").format(
+                                width=info_full.width,
+                                height=info_full.height,
+                                fps=f"{fps:.2f}",
+                                duration=f"{duration:.1f}"
+                            )
+                            info_text += "\n" + t("video_frame_count").format(count=frame_count)
+                            
+                            # 格式和编码信息
+                            format_name = info_full.format_name.upper() if info_full.format_name else "Unknown"
+                            video_codec = info_full.video_codec.upper() if info_full.video_codec else "Unknown"
+                            info_text += f"\n{t('video_format')}: {format_name}"
+                            info_text += f"\n{t('video_codec_info')}: {video_codec}"
+                            info_text += f"\n{t('video_file_size')}: {file_size_str}"
+                            info_text += f"\n{t('video_bitrate')}: {bitrate_str}"
+                            
+                            # 音轨信息
+                            if audio_count > 0:
+                                info_text += f"\n{t('video_audio_tracks')}: {audio_count}"
+                                # 显示第一个音轨的编码
+                                if info_full.audio_streams:
+                                    first_audio = info_full.audio_streams[0]
+                                    audio_codec = first_audio.codec_name.upper()
+                                    audio_channels = first_audio.channels
+                                    audio_sr = first_audio.sample_rate
+                                    if audio_sr >= 1000:
+                                        audio_sr_str = f"{audio_sr/1000:.1f}kHz"
+                                    else:
+                                        audio_sr_str = f"{audio_sr}Hz"
+                                    info_text += f" ({audio_codec}, {audio_channels}ch, {audio_sr_str})"
+                            
+                            # 字幕信息
+                            if subtitle_count > 0:
+                                info_text += f"\n{t('video_subtitle_tracks')}: {subtitle_count}"
+                            
+                            return info_text
+                        return t("video_unsupported")
+                    except Exception as e:
+                        return f"{t('msg_error')} {str(e)}"
+                
+                video_input.change(
+                    fn=on_video_upload,
+                    inputs=[video_input],
+                    outputs=[video_info_display]
+                )
+                
+                # 预设模板联动逻辑
+                def apply_video_preset(preset_name):
+                    """根据预设名称返回对应的参数配置"""
+                    # 根据翻译后的标签判断 (同时支持中英文)
+                    if t("video_preset_fast") in preset_name or "Fast Preview" in preset_name:
+                        return (
+                            gr.update(value=t("video_codec_h264")),
+                            gr.update(value=28),
+                            gr.update(value=t("video_speed_veryfast"))
+                        )
+                    elif t("video_preset_balanced") in preset_name or "Balanced" in preset_name:
+                        return (
+                            gr.update(value=t("video_codec_h264")),
+                            gr.update(value=23),
+                            gr.update(value=t("video_speed_medium"))
+                        )
+                    elif t("video_preset_hq") in preset_name or "High Quality" in preset_name:
+                        return (
+                            gr.update(value=t("video_codec_h265")),
+                            gr.update(value=20),
+                            gr.update(value=t("video_speed_slow"))
+                        )
+                    elif t("video_preset_ultra") in preset_name or "Ultra Quality" in preset_name:
+                        return (
+                            gr.update(value=t("video_codec_h265")),
+                            gr.update(value=16),
+                            gr.update(value=t("video_speed_veryslow"))
+                        )
+                    else:
+                        # 自定义模式，不改变当前设置
+                        return gr.update(), gr.update(), gr.update()
+                
+                video_preset_templates.change(
+                    fn=apply_video_preset,
+                    inputs=[video_preset_templates],
+                    outputs=[video_codec, video_crf, video_preset_choice]
+                )
+                
+                # 视频处理函数
+                def process_video_ui(video_path, engine, scale, denoise, output_resolution, custom_width, custom_height, 
+                                     output_format, codec, crf, preset, keep_audio, keep_subtitles, fps_override,
+                                     a4k_mode, a4k_batch_size, segment_duration, a4k_model, a4k_processor, a4k_device,
+                                     cugan_model, cugan_syncgap,
+                                     esrgan_model, esrgan_tta,
+                                     waifu2x_model, waifu2x_tta,
+                                     gpu_device, progress=gr.Progress()):
+                    if video_path is None:
+                        return None, "", t("msg_upload_first"), None
+                    
+                    # 内存检查
+                    try:
+                        import psutil
+                        mem = psutil.virtual_memory()
+                        mem_usage = mem.percent
+                        mem_used_gb = mem.used / (1024**3)
+                        mem_total_gb = mem.total / (1024**3)
+                        
+                        if mem_usage > 95:
+                            return None, "", t("memory_critical").format(usage=mem_usage), None
+                        elif mem_usage > 85:
+                            log_info(t("memory_warning").format(usage=mem_usage))
+                    except ImportError:
+                        pass  # psutil 未安装，跳过内存检查
+                    
+                    # 检查 FFmpeg
+                    if not FFMPEG_EXE.exists():
+                        return None, "", t("video_no_ffmpeg"), None
+                    
+                    # 判断 Anime4K 是否使用原生模式
+                    use_native_a4k = "Anime4K" in engine and (
+                        t("video_a4k_mode_native") in a4k_mode or "Native" in a4k_mode
+                    )
+                    
+                    # 映射引擎名称 (支持中英文)
+                    engine_map = {
+                        "Anime4K": "anime4k",
+                        "RealCUGAN Pro": "realcugan-pro",
+                        "RealCUGAN SE": "realcugan-se",
+                        "RealESRGAN Anime": "realesrgan-anime",
+                        "waifu2x": "waifu2x",
+                        "RealESRGAN -": "realesrgan",
+                        "RealESRGAN - ": "realesrgan",
+                    }
+                    # 如果 Anime4K 选择内置模式，使用逐帧处理
+                    if "Anime4K" in engine and not use_native_a4k:
+                        engine_key = "anime4k-builtin"
+                    else:
+                        engine_key = "anime4k"
+                        for key, val in engine_map.items():
+                            if key in engine:
+                                engine_key = val
+                                break
+                    
+                    # 解析放大倍数
+                    scale_val = int(scale.replace("x", ""))
+                    
+                    # 解析降噪强度 (支持中英文)
+                    denoise_val = -1
+                    if "(0)" in denoise or "Light" in denoise:
+                        denoise_val = 0
+                    elif "(1)" in denoise or "Medium" in denoise:
+                        denoise_val = 1
+                    elif "(2)" in denoise or "Strong" in denoise:
+                        denoise_val = 2
+                    elif "(3)" in denoise or "Max" in denoise:
+                        denoise_val = 3
+                    
+                    # 映射编码器
+                    codec_map = {"H.264": "libx264", "H.265": "libx265", "VP9": "libvpx-vp9"}
+                    codec_val = "libx264"
+                    for key, val in codec_map.items():
+                        if key in codec:
+                            codec_val = val
+                            break
+                    
+                    # 映射编码速度 (支持中英文)
+                    preset_map = {
+                        "极速": "ultrafast", "Ultrafast": "ultrafast",
+                        "超快": "superfast", "Superfast": "superfast",
+                        "很快": "veryfast", "Veryfast": "veryfast",
+                        "较快": "faster", "Faster": "faster",
+                        "快速": "fast", "Fast": "fast",
+                        "中等": "medium", "Medium": "medium",
+                        "慢速": "slow", "Slow": "slow",
+                        "较慢": "slower", "Slower": "slower",
+                        "很慢": "veryslow", "Veryslow": "veryslow"
+                    }
+                    preset_val = "medium"
+                    for key, val in preset_map.items():
+                        if key in preset:
+                            preset_val = val
+                            break
+                    
+                    # 处理 fps_override
+                    fps = fps_override if fps_override and fps_override > 0 else None
+                    
+                    # 处理输出分辨率 (支持中英文)
+                    target_resolution = None
+                    if "自定义" in output_resolution or "Custom" in output_resolution:
+                        target_resolution = (int(custom_width), int(custom_height))
+                    elif "1080p" in output_resolution:
+                        target_resolution = (1920, 1080)
+                    elif "2K" in output_resolution:
+                        target_resolution = (2560, 1440)
+                    elif "4K" in output_resolution:
+                        target_resolution = (3840, 2160)
+                    
+                    # 解析引擎特定参数
+                    engine_params = {}
+                    
+                    # Anime4K 参数
+                    if "Anime4K" in engine:
+                        # 模型: acnet 或 acnet-gan
+                        if "GAN" in a4k_model:
+                            engine_params['model_name'] = 'acnet-gan'
+                        else:
+                            engine_params['model_name'] = 'acnet'
+                        # 处理器: cuda, opencl, cpu
+                        if "CUDA" in a4k_processor:
+                            engine_params['processor'] = 'cuda'
+                        elif "OpenCL" in a4k_processor:
+                            engine_params['processor'] = 'opencl'
+                        else:
+                            engine_params['processor'] = 'cpu'
+                        engine_params['device'] = int(a4k_device) if a4k_device else 0
+                        # 批量处理帧数（AIS 内置模式使用）
+                        batch_val = int(a4k_batch_size) if a4k_batch_size else 100
+                        engine_params['batch_size'] = batch_val
+                        log_info(f"[UI] 批量帧数设置: {a4k_batch_size} -> {batch_val}")
+                    
+                    # RealCUGAN 参数
+                    elif "RealCUGAN" in engine or "CUGAN" in engine:
+                        if "Pro" in cugan_model:
+                            engine_params['cugan_type'] = 'pro'
+                        elif "SE" in cugan_model:
+                            engine_params['cugan_type'] = 'se'
+                        else:
+                            engine_params['cugan_type'] = 'nose'
+                        engine_params['syncgap'] = int(cugan_syncgap) if cugan_syncgap else 3
+                        engine_params['device'] = int(gpu_device) if gpu_device else 0
+                    
+                    # RealESRGAN 参数
+                    elif "RealESRGAN" in engine or "ESRGAN" in engine:
+                        if "AnimevideV3" in esrgan_model or "动漫" in esrgan_model:
+                            engine_params['esrgan_model'] = 'realesr-animevideov3'
+                        elif "x4plus-anime" in esrgan_model or "动漫强化" in esrgan_model:
+                            engine_params['esrgan_model'] = 'realesrgan-x4plus-anime'
+                        else:
+                            engine_params['esrgan_model'] = 'realesrgan-x4plus'
+                        engine_params['tta'] = esrgan_tta
+                        engine_params['device'] = int(gpu_device) if gpu_device else 0
+                    
+                    # Waifu2x 参数
+                    elif "waifu2x" in engine:
+                        if "CuNet" in waifu2x_model:
+                            engine_params['waifu2x_model'] = 'models-cunet'
+                        elif "Anime" in waifu2x_model or "Style Art" in waifu2x_model:
+                            engine_params['waifu2x_model'] = 'models-upconv_7_anime_style_art_rgb'
+                        else:
+                            engine_params['waifu2x_model'] = 'models-upconv_7_photo'
+                        engine_params['tta'] = waifu2x_tta
+                        engine_params['device'] = int(gpu_device) if gpu_device else 0
+                    
+                    # 切片处理参数
+                    segment_sec = int(segment_duration) if segment_duration else 15
+                    engine_params['segment_duration'] = segment_sec
+                    log_info(f"[UI] 切片时长设置: {segment_sec}秒")
+                    
+                    # 初始化实时日志
+                    _realtime_log.clear()
+                    _realtime_log.set_processing(True)
+                    
+                    # 获取源视频详细信息用于显示
+                    try:
+                        info_full = get_video_info_full(video_path)
+                        if info_full:
+                            file_size_bytes = Path(video_path).stat().st_size
+                            if file_size_bytes >= 1024 * 1024 * 1024:
+                                file_size_str = f"{file_size_bytes / (1024*1024*1024):.2f} GB"
+                            elif file_size_bytes >= 1024 * 1024:
+                                file_size_str = f"{file_size_bytes / (1024*1024):.2f} MB"
+                            else:
+                                file_size_str = f"{file_size_bytes / 1024:.2f} KB"
+                            
+                            bit_rate = info_full.bit_rate
+                            if bit_rate >= 1000000:
+                                bitrate_str = f"{bit_rate / 1000000:.2f} Mbps"
+                            elif bit_rate >= 1000:
+                                bitrate_str = f"{bit_rate / 1000:.0f} Kbps"
+                            else:
+                                bitrate_str = f"{bit_rate} bps" if bit_rate > 0 else "N/A"
+                            
+                            src_info = f"📹 源视频信息:\n"
+                            src_info += f"分辨率: {info_full.width}x{info_full.height}, {info_full.fps:.2f} FPS\n"
+                            src_info += f"时长: {info_full.duration:.1f}秒, 预计帧数: {info_full.total_frames}\n"
+                            src_info += f"封装格式: {info_full.format_name.upper() if info_full.format_name else 'Unknown'}\n"
+                            src_info += f"视频编码: {info_full.video_codec.upper() if info_full.video_codec else 'Unknown'}\n"
+                            src_info += f"文件大小: {file_size_str}, 比特率: {bitrate_str}\n"
+                            if info_full.audio_count > 0 and info_full.audio_streams:
+                                first_audio = info_full.audio_streams[0]
+                                audio_sr_str = f"{first_audio.sample_rate/1000:.1f}kHz" if first_audio.sample_rate >= 1000 else f"{first_audio.sample_rate}Hz"
+                                src_info += f"音轨: {info_full.audio_count} ({first_audio.codec_name.upper()}, {first_audio.channels}ch, {audio_sr_str})\n"
+                            _realtime_log.set_video_info(src_info)
+                            _realtime_log.add(f"开始处理: {Path(video_path).name}")
+                            _realtime_log.add(f"引擎: {engine_key.upper()}, 放大: {scale_val}x")
+                    except Exception:
+                        pass
+                    
+                    def progress_callback(msg, pct=None):
+                        # 添加到全局实时日志
+                        _realtime_log.add(msg)
+                        if pct is not None:
+                            short_desc = msg.split('\n')[0] if '\n' in msg else msg
+                            progress(pct / 100.0, desc=short_desc)
+                    
+                    try:
+                        output_path, message = process_video(
+                            video_path=video_path,
+                            engine=engine_key,
+                            output_format=output_format,
+                            codec=codec_val,
+                            crf=int(crf),
+                            preset=preset_val,
+                            keep_audio=keep_audio,
+                            keep_subtitles=keep_subtitles,
+                            extract_fps=fps,
+                            progress_callback=progress_callback,
+                            # 新增参数
+                            scale=scale_val,
+                            denoise=denoise_val,
+                            target_resolution=target_resolution,
+                            # 引擎特定参数 - 使用 ** 展开字典
+                            **engine_params
+                        )
+                        
+                        _realtime_log.set_processing(False)
+                        
+                        if output_path:
+                            _realtime_log.add(t('video_done'))
+                            # 获取输出视频信息
+                            try:
+                                out_info = get_video_info_full(output_path)
+                                out_size_bytes = Path(output_path).stat().st_size
+                                if out_size_bytes >= 1024 * 1024 * 1024:
+                                    out_size_str = f"{out_size_bytes / (1024*1024*1024):.2f} GB"
+                                elif out_size_bytes >= 1024 * 1024:
+                                    out_size_str = f"{out_size_bytes / (1024*1024):.2f} MB"
+                                else:
+                                    out_size_str = f"{out_size_bytes / 1024:.2f} KB"
+                                
+                                out_bitrate = out_info.bit_rate if out_info else 0
+                                if out_bitrate >= 1000000:
+                                    out_bitrate_str = f"{out_bitrate / 1000000:.2f} Mbps"
+                                elif out_bitrate >= 1000:
+                                    out_bitrate_str = f"{out_bitrate / 1000:.0f} Kbps"
+                                else:
+                                    out_bitrate_str = "N/A"
+                                
+                                # 构建完成信息
+                                progress_info = _realtime_log.get_video_info()
+                                progress_info += f"\n🎬 输出视频信息:\n"
+                                if out_info:
+                                    progress_info += f"分辨率: {out_info.width}x{out_info.height}\n"
+                                progress_info += f"文件大小: {out_size_str}, 比特率: {out_bitrate_str}\n"
+                                progress_info += f"编码器: {codec_val}, CRF: {crf}, 预设: {preset_val}\n"
+                                progress_info += f"\n✅ {t('video_done')}"
+                            except Exception:
+                                progress_info = _realtime_log.get_video_info() + f"\n\n✅ {t('video_done')}"
+                            
+                            return output_path, progress_info, _realtime_log.get_all(), output_path
+                        else:
+                            _realtime_log.add(message)
+                            return None, _realtime_log.get_video_info() + f"\n\n❌ {message}", _realtime_log.get_all(), None
+                    
+                    except Exception as e:
+                        _realtime_log.set_processing(False)
+                        error_msg = t("video_error").format(error=str(e))
+                        _realtime_log.add(error_msg)
+                        return None, _realtime_log.get_video_info() + f"\n\n❌ {error_msg}", _realtime_log.get_all(), None
+                
+                video_process_btn.click(
+                    fn=process_video_ui,
+                    inputs=[
+                        video_input,
+                        video_engine,
+                        video_scale,
+                        video_denoise,
+                        video_output_resolution,
+                        video_custom_width,
+                        video_custom_height,
+                        video_output_format,
+                        video_codec,
+                        video_crf,
+                        video_preset_choice,
+                        video_keep_audio,
+                        video_keep_subtitles,
+                        video_fps_override,
+                        # 引擎特定设置
+                        video_a4k_mode,
+                        video_a4k_batch_size,
+                        video_segment_duration,
+                        video_a4k_model,
+                        video_a4k_processor,
+                        video_a4k_device,
+                        video_cugan_model,
+                        video_cugan_syncgap,
+                        video_esrgan_model,
+                        video_esrgan_tta,
+                        video_waifu2x_model,
+                        video_waifu2x_tta,
+                        video_gpu_device
+                    ],
+                    outputs=[video_output, video_progress, video_status, video_download]
+                )
+                
+                # 实时日志轮询函数
+                def poll_realtime_log():
+                    """轮询获取实时日志"""
+                    return _realtime_log.get_all()
+                
+                # 使用 Timer 组件实现实时日志更新（每0.5秒更新一次，始终活跃）
+                log_timer = gr.Timer(value=0.5, active=True)
+                
+                # Timer 触发时更新日志
+                log_timer.tick(
+                    fn=poll_realtime_log,
+                    inputs=[],
+                    outputs=[video_status]
+                )
+                
+                # 取消按钮事件
+                def on_cancel_video():
+                    cancel_current_task()
+                    _realtime_log.add("任务已取消")
+                    _realtime_log.set_processing(False)
+                    return t("video_cancelled")
+                
+                video_cancel_btn.click(
+                    fn=on_cancel_video,
+                    inputs=[],
+                    outputs=[video_progress]
+                )
+            
             # 图库标签页
             with gr.Tab(t("tab_gallery")):
                 gr.Markdown(f"### {t('gallery_title')}")
@@ -3181,19 +6270,17 @@ def create_ui() -> gr.Blocks:
                 gr.Markdown(f"## {t('language_settings')}")
                 gr.Markdown(t("language_desc"))
                 
+                current_lang = get_current_lang()
                 with gr.Row():
-                    lang_selector = gr.Radio(
-                        choices=["简体中文", "English"],
-                        value="简体中文" if get_current_lang() == "zh-CN" else "English",
-                        label=t("language"),
-                        interactive=True
+                    lang_zh_btn = gr.Button(
+                        "✓ 简体中文" if current_lang == "zh-CN" else "简体中文",
+                        variant="primary" if current_lang == "zh-CN" else "secondary",
+                        scale=1
                     )
-                    lang_save_status = gr.Textbox(
-                        label="",
-                        value="",
-                        interactive=False,
-                        lines=1,
-                        visible=False
+                    lang_en_btn = gr.Button(
+                        "✓ English" if current_lang == "en" else "English",
+                        variant="primary" if current_lang == "en" else "secondary",
+                        scale=1
                     )
                 
                 gr.Markdown("---")
@@ -3339,6 +6426,7 @@ def create_ui() -> gr.Blocks:
                         - {t('output_dir')}: `{OUTPUT_DIR}`
                         - {t('program_dir')}: `{BASE_DIR}`
                         - {t('data_dir')}: `{DATA_DIR}`
+                        - {t('temp_dir')}: `{TEMP_DIR}`
                         - {t('config_file')}: `{CONFIG_FILE}`
                         - {t('preset_file')}: `{CUSTOM_PRESETS_FILE}`
                         """)
@@ -3364,6 +6452,33 @@ def create_ui() -> gr.Blocks:
                     fn=refresh_share_url,
                     inputs=None,
                     outputs=[share_url_display]
+                )
+                
+                gr.Markdown("---")
+                
+                # === ETA估算数据管理 ===
+                gr.Markdown(f"## {t('reset_eta_data')}")
+                
+                with gr.Row():
+                    reset_eta_btn = gr.Button(t("reset_eta_data"), variant="stop")
+                    reset_eta_status = gr.Textbox(
+                        label="",
+                        value="",
+                        interactive=False,
+                        lines=1
+                    )
+                
+                def do_reset_eta_data():
+                    """重置ETA估算数据"""
+                    global _performance_data
+                    _performance_data = PerformanceData()
+                    _performance_data.save()
+                    return t("reset_eta_done")
+                
+                reset_eta_btn.click(
+                    fn=do_reset_eta_data,
+                    inputs=[],
+                    outputs=[reset_eta_status]
                 )
             
             # 帮助标签页
@@ -3655,6 +6770,213 @@ V3 版本使用纯 CNN (卷积神经网络) 算法, 专为动漫图像和视频�
 4. 预设会保存在 `custom_presets.json` 文件中
                         """)
                     
+                    with gr.Tab("视频超分指南"):
+                        gr.Markdown("""
+## 视频超分辨率完全指南
+
+本指南将帮助您理解视频超分辨率的基本概念和如何使用 AIS 处理视频。
+
+---
+
+## 什么是视频超分辨率?
+
+视频超分辨率是利用 AI 技术将低分辨率视频提升到更高分辨率的过程。例如，将 720p 视频提升到 1080p 或 4K。
+与简单的拉伸放大不同，AI 超分辨率会"智能地"补充画面细节，使画面更加清晰锐利。
+
+### 适用场景
+- 📺 老动画/老番修复 (DVD/VHS 画质提升)
+- 🎮 游戏录像增强 (录制的720p视频提升到1080p)
+- 📱 手机视频放大 (小尺寸视频放大用于大屏播放)
+- 🎬 视频素材升级 (低分辨率素材升级用于高清剪辑)
+
+---
+
+## 处理模式详解
+
+### 原生模式 (极速)
+使用 Anime4KCPP 内置的视频处理能力，直接读取视频、处理、输出。
+
+| 项目 | 说明 |
+|------|------|
+| 优点 | 处理速度极快，内存占用低 |
+| 缺点 | 编码设置不生效，无法中途取消，输出文件可能较大 |
+| 适合 | 快速预览效果、短视频处理 |
+
+**⚠️ 注意**: 原生模式下，CRF、编码预设等设置不会生效，输出由 Anime4KCPP 控制。
+取消按钮在原生模式下可能无法立即终止处理。
+
+### AIS 内置模式 (推荐)
+AIS 会提取视频帧 -> AI 批量处理 -> FFmpeg 重新编码。
+
+| 项目 | 说明 |
+|------|------|
+| 优点 | 所有编码设置完全可控，支持随时取消，文件大小可控 |
+| 缺点 | 速度比原生模式慢 |
+| 适合 | 正式输出、需要精确控制质量的场景 |
+
+**🔧 特点**:
+- 使用批量处理技术，避免重复初始化 GPU，大幅提升效率
+- 默认每 100 帧为一批次，可在设置中调整
+- 完整的 FFmpeg 编码控制
+- 支持进度保存和断点续传
+
+---
+
+## 参数设置详解
+
+### 放大倍率
+| 倍率 | 输出分辨率示例 | 建议场景 |
+|------|----------------|----------|
+| 2x | 720p → 1440p | 一般放大，速度较快 |
+| 3x | 720p → 2160p(约4K) | 大幅放大 |
+| 4x | 480p → 1920p | 低分辨率视频修复 |
+
+**💡 建议**: 不要过度放大，2x 通常是最佳性价比。
+
+### 降噪强度
+| 等级 | 效果 | 适用场景 |
+|------|------|----------|
+| 无降噪 | 完全保留原始噪点 | 高质量原片 |
+| 轻度(0) | 轻微降噪 | 一般质量视频 |
+| 中度(1) | 中等降噪 | 有轻微噪点的视频 |
+| 强力(2) | 强力降噪 | 有明显噪点/颗粒感 |
+| 最强(3) | 极强降噪 | 严重噪点/老旧视频 |
+
+### 输出分辨率
+- **自动**: 按放大倍率计算 (如 720p × 2 = 1440p)
+- **1080p/2K/4K**: 强制输出到指定分辨率
+- **自定义**: 精确指定宽高
+
+### 编码器选择
+| 编码器 | 特点 | 兼容性 | 文件大小 |
+|--------|------|--------|----------|
+| H.264 | 最通用，所有设备支持 | ★★★★★ | 较大 |
+| H.265 | 更高效压缩，新设备支持 | ★★★☆☆ | 较小 |
+| VP9 | 开源格式，Web友好 | ★★☆☆☆ | 较小 |
+
+**💡 建议**: 除非有特殊需求，选择 H.264 以获得最佳兼容性。
+
+### CRF (质量参数)
+| CRF值 | 质量 | 文件大小 | 适用场景 |
+|-------|------|----------|----------|
+| 15-17 | 极高 | 很大 | 存档/专业用途 |
+| 18-20 | 高 | 大 | 高质量输出 (推荐) |
+| 21-23 | 中 | 中 | 平衡质量和大小 |
+| 24-28 | 低 | 小 | 快速预览/网络分享 |
+
+### 编码速度
+速度越慢，压缩效率越高，文件越小：
+```
+ultrafast < superfast < veryfast < faster < fast < medium < slow < slower < veryslow
+```
+**💡 建议**: `medium` 是最佳平衡点，`slow` 及更慢主要用于存档。
+
+---
+
+## 引擎选择指南
+
+### Anime4K (推荐用于动漫视频)
+- ✅ 处理速度最快
+- ✅ 显存占用最低
+- ✅ 专为动漫优化
+- ⚠️ 对真实视频效果一般
+
+### RealCUGAN
+- ✅ 动漫视频效果优秀
+- ✅ 支持多种降噪等级
+- ⚠️ 速度中等
+- ⚠️ 显存占用中等
+
+### RealESRGAN
+- ✅ 修复能力最强
+- ✅ 支持真实视频
+- ⚠️ 速度较慢
+- ⚠️ 显存占用较高
+
+### Waifu2x
+- ✅ 降噪效果最好
+- ✅ 画面柔和细腻
+- ⚠️ 放大效果不如其他引擎
+
+---
+
+## 处理流程说明
+
+```
+1. 提取帧   ─→  将视频拆分为单帧图片
+      ↓
+2. AI处理   ─→  批量超分辨率处理
+      ↓
+3. 合成视频 ─→  FFmpeg 将处理后的帧合成视频
+      ↓
+4. 合并音轨 ─→  将原始音频/字幕合并到输出视频
+```
+
+### 断点续传
+如果处理中断，AIS 会保存当前进度。下次处理同一视频时会自动询问是否继续。
+
+---
+
+## 常见问题
+
+### Q: 处理速度很慢怎么办?
+A: 
+1. 使用 Anime4K 引擎（最快）
+2. 降低放大倍率（2x 比 4x 快很多）
+3. 使用原生模式（如果对编码设置不敏感）
+4. 增加批量处理帧数（但会增加内存占用）
+
+### Q: 输出文件太大怎么办?
+A:
+1. 提高 CRF 值（如 23-25）
+2. 使用 H.265 编码器
+3. 降低输出分辨率
+4. 使用较慢的编码预设
+
+### Q: 显存不足怎么办?
+A:
+1. 使用 Anime4K（显存占用最低）
+2. 降低放大倍率
+3. 关闭其他占用显存的程序
+
+### Q: 音频/字幕丢失怎么办?
+A: 确保勾选了"保留音频"和"保留字幕"选项。
+
+### Q: 画面出现闪烁怎么办?
+A:
+1. 降低降噪强度
+2. 尝试不同的引擎
+3. 对于 RealCUGAN，调整 SyncGap 参数
+
+---
+
+## 推荐设置
+
+### 动漫视频 (一般画质)
+- 引擎: Anime4K + AIS内置模式
+- 放大: 2x
+- 降噪: 轻度(0)
+- 编码: H.264, CRF 20, medium
+
+### 动漫视频 (高质量)
+- 引擎: RealCUGAN Pro
+- 放大: 2x
+- 降噪: 保守(0)
+- 编码: H.264, CRF 18, slow
+
+### 老动画修复
+- 引擎: RealESRGAN AnimevideV3
+- 放大: 2x
+- 降噪: 强力(2)
+- 编码: H.265, CRF 20, medium
+
+### 真实视频
+- 引擎: RealESRGAN x4plus
+- 放大: 2x
+- 降噪: 无
+- 编码: H.264, CRF 18, slow
+                        """)
+                    
                     with gr.Tab("使用技巧"):
                         gr.Markdown("""
 ## 使用技巧
@@ -3740,17 +7062,43 @@ By SENyiAi | [GitHub](https://github.com/SENyiAi/AIS)
         **提示**: 处理完成后可使用对比滑块查看效果差异 | 输出文件保存在 `输出` 文件夹 | 在图库中可浏览所有输出
         """)
         
-        # 语言切换 - 使用JS强制刷新页面 (在设置页定义的 lang_selector)
-        def on_language_change(lang_choice):
-            """处理语言切换"""
-            new_lang = "zh-CN" if lang_choice == "简体中文" else "en"
-            set_lang(new_lang)
-            return "[已保存] 刷新页面后生效"
+        # 语言切换 - 使用按钮切换
+        def switch_to_chinese():
+            """切换到中文"""
+            set_lang("zh-CN")
+            log_info("[语言] 已切换到: zh-CN")
+            # 返回提示信息，JS延迟后刷新
+            return gr.update(value="[已保存] 正在刷新...")
         
-        lang_selector.change(
-            fn=on_language_change,
-            inputs=[lang_selector],
-            outputs=[lang_save_status],
+        def switch_to_english():
+            """切换到英文"""
+            set_lang("en")
+            log_info("[语言] 已切换到: en")
+            # 返回提示信息，JS延迟后刷新
+            return gr.update(value="[Saved] Reloading...")
+        
+        # 创建一个隐藏的状态显示
+        lang_status = gr.Textbox(value="", visible=False)
+        
+        lang_zh_btn.click(
+            fn=switch_to_chinese,
+            inputs=[],
+            outputs=[lang_status]
+        ).then(
+            fn=None,
+            inputs=[],
+            outputs=[],
+            js="() => { setTimeout(() => { window.location.reload(); }, 500); }"
+        )
+        
+        lang_en_btn.click(
+            fn=switch_to_english,
+            inputs=[],
+            outputs=[lang_status]
+        ).then(
+            fn=None,
+            inputs=[],
+            outputs=[],
             js="() => { setTimeout(() => { window.location.reload(); }, 500); }"
         )
         
@@ -3814,6 +7162,25 @@ def load_share_url_from_file() -> Optional[str]:
 
 
 if __name__ == "__main__":
+    # Windows asyncio 修复 - 解决 ConnectionResetError 问题
+    # 在 Windows 上使用 SelectorEventLoop 代替默认的 ProactorEventLoop
+    # 可以避免某些网络连接重置错误
+    import platform
+    import warnings
+    import logging
+    
+    # 抑制 asyncio 连接重置警告
+    warnings.filterwarnings("ignore", message=".*ConnectionResetError.*")
+    logging.getLogger("asyncio").setLevel(logging.ERROR)
+    
+    if platform.system() == "Windows":
+        import asyncio
+        # 设置 Windows 事件循环策略
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass  # 如果失败，使用默认策略
+    
     # 检查引擎状态
     engine_status = check_engines()
     
@@ -3831,8 +7198,6 @@ if __name__ == "__main__":
     # 启动应用
     try:
         log_info("正在启动Gradio服务...")
-        # 使用 prevent_thread_lock=True 以便获取返回值
-        # 使用 head 参数注入剪贴板粘贴 JavaScript (Gradio 6.0 正确方式)
         result = app.launch(
             server_name="127.0.0.1",
             server_port=7860,
