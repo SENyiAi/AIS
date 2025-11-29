@@ -140,7 +140,8 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "scale_ratio": "放大倍率",
         "denoise_level": "降噪强度",
         "denoise_level_info": "-1=无降噪, 0=保守, 3=强力",
-        "advanced_options": "⚙️ 高级选项",
+        "advanced_options": "高级选项",
+        "advanced_params": "输出设置",
         "syncgap_mode": "同步模式 (SyncGap)",
         "syncgap_info": "0=无同步, 1=精确, 2=粗略, 3=非常粗略(默认)",
         "tile_size": "Tile 大小",
@@ -253,6 +254,7 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "output_dir": "输出目录",
         "program_dir": "程序目录",
         "data_dir": "数据目录",
+        "temp_dir": "临时目录",
         "config_file": "配置文件",
         "preset_file": "预设文件",
         "custom_presets": "自定义预设",
@@ -263,6 +265,54 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "help_presets": "预设说明",
         "help_faq": "常见问题",
         "help_about": "关于",
+        "help_video": "视频处理指南",
+        "help_video_content": """
+## 视频处理 (Beta) 使用指南
+
+### 功能概述
+视频处理功能可以对视频进行逐帧超分辨率放大，自动提取帧、处理、重组为高清视频。支持多音轨和字幕轨保留。
+
+### 超分引擎选择
+参考 [SVFI 模型选择说明](https://doc.svfi.group/pages/model-spec/)：
+
+| 引擎 | 适用场景 | 速度 | 特点 |
+|------|----------|------|------|
+| **Anime4K** | 动漫2D | ⚡极速 | 实时超分，适合预览，较保守 |
+| **RealCUGAN Pro** | 动漫2D | 🔵中等 | 效果优秀，推荐动漫使用 |
+| **RealCUGAN SE** | 动漫2D | 🔵中等 | 速度与质量平衡 |
+| **RealESRGAN Anime** | 动漫2D | 🔵中等 | 脑补细节，画面更锐利艳丽 |
+| **waifu2x** | 动漫2D | 🟠较慢 | 经典算法，保守稳定 |
+| **RealESRGAN** | 写实/3D | 🔵中等 | 通用模型，3D/实拍均可 |
+
+### 编码设置建议
+参考 [SVFI 高级设置](https://doc.svfi.group/pages/advanced-settings/)：
+
+**编码器选择：**
+- **H.264 (AVC)**：兼容性最佳，适合分享上传
+- **H.265 (HEVC)**：压缩效率更高，2K/4K推荐使用
+- **VP9**：开源高效，适合WebM格式
+
+**CRF质量参数：**
+- **16**：收藏级质量，文件较大
+- **18-23**：日常使用推荐范围
+- **28+**：快速预览，质量较低
+
+**编码速度：**
+- 速度越慢，压缩效率越高，文件越小
+- 推荐日常使用 **medium**
+- 追求质量使用 **slow** 或 **veryslow**
+
+### 降噪设置
+仅 RealCUGAN 和 waifu2x 支持降噪：
+- **-1**：不降噪（保持原始）
+- **0-1**：轻微降噪
+- **2-3**：强降噪（慎用，可能丢失细节）
+
+### 注意事项
+1. 视频处理耗时较长，建议先用短片段测试效果
+2. 4K输出建议使用H.265编码以减小文件体积
+3. MKV格式支持多音轨和字幕轨保留
+""",
         
         # 语言设置（新增到设置中）
         "language_settings": "语言设置",
@@ -286,6 +336,160 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "gif_done": "GIF处理完成，共{count}帧",
         "gif_error": "GIF处理失败: {error}",
         "gif_compare_note": "注意：GIF动画在滑动对比中可能不同步，请点击下方展开查看原图和结果",
+        
+        # 视频处理 (Beta)
+        "tab_video": "视频处理 (Beta)",
+        "video_desc": "上传视频，选择超分引擎，自动逐帧处理后重组为高清视频。支持多音轨/字幕保留。",
+        "upload_video": "上传视频",
+        
+        # 视频引擎选项
+        "video_engine": "超分引擎",
+        "video_engine_info": "动漫素材推荐 Anime4K/RealCUGAN，写实素材推荐 RealESRGAN",
+        "video_engine_anime4k": "Anime4K - 动漫极速",
+        "video_engine_realcugan_pro": "RealCUGAN Pro - 动漫高质",
+        "video_engine_realcugan_se": "RealCUGAN SE - 动漫标准",
+        "video_engine_realesrgan_anime": "RealESRGAN Anime - 动漫通用",
+        "video_engine_waifu2x": "waifu2x CuNet - 动漫经典",
+        "video_engine_realesrgan": "RealESRGAN - 写实通用",
+        
+        # 超分设置
+        "video_sr_settings": "超分模型设置",
+        "video_scale": "放大倍数",
+        "video_scale_info": "2x适合1080p→4K，4x适合480p→1080p",
+        "video_denoise": "降噪强度",
+        "video_denoise_info": "RealCUGAN/waifu2x专用，数值越大降噪越强",
+        "video_denoise_none": "无降噪",
+        "video_denoise_light": "轻微降噪 (0)",
+        "video_denoise_medium": "中度降噪 (1)",
+        "video_denoise_strong": "强降噪 (2)",
+        "video_denoise_max": "极强降噪 (3)",
+        
+        # 引擎特定设置
+        "video_engine_settings": "引擎特定设置",
+        "video_a4k_mode": "Anime4K 处理模式",
+        "video_a4k_mode_native": "原生模式",
+        "video_a4k_mode_builtin": "AIS 内置模式",
+        "video_a4k_mode_native_info": "由 Anime4KCPP 直接处理视频，速度最快\n编码设置不生效 (CRF/预设等)，取消按钮无法终止处理",
+        "video_a4k_mode_builtin_info": "批量处理帧后用 FFmpeg 编码，避免重复初始化 GPU\n编码设置完全可控，支持取消处理",
+        "video_a4k_batch_size": "批量处理帧数",
+        "video_a4k_batch_size_info": "每批次处理的帧数，值越大越快但内存占用越高",
+        "video_segment_duration": "切片时长 (秒)",
+        "video_segment_duration_info": "将视频分割成小段处理，避免内存溢出。0=不分割(仅小视频)",
+        "video_segment_processing": "切片处理",
+        "video_segment_status": "处理切片 {current}/{total}",
+        "video_a4k_model": "Anime4K 模型",
+        "video_a4k_model_acnet": "ACNet (默认)",
+        "video_a4k_model_acnet_gan": "ACNet GAN (高质量)",
+        "video_a4k_processor": "Anime4K 处理器",
+        "video_a4k_processor_cuda": "CUDA (NVIDIA GPU)",
+        "video_a4k_processor_opencl": "OpenCL (通用GPU)",
+        "video_a4k_processor_cpu": "CPU (兼容模式)",
+        "video_a4k_device": "GPU 设备索引",
+        "video_native_mode_warning": "原生模式下，编码器/CRF/速度预设不生效",
+        "video_cugan_model": "RealCUGAN 模型类型",
+        "video_cugan_model_pro": "Pro (高质量)",
+        "video_cugan_model_se": "SE (标准效率)",
+        "video_cugan_model_nose": "Nose (无锐化)",
+        "video_cugan_syncgap": "同步间隔 (SyncGap)",
+        "video_cugan_syncgap_info": "值越大处理越快但可能略有瑕疵，0为逐帧处理",
+        "video_esrgan_model": "RealESRGAN 模型",
+        "video_esrgan_model_anime": "AnimevideV3 (动漫)",
+        "video_esrgan_model_x4plus": "x4plus (通用)",
+        "video_esrgan_model_anime_x4plus": "x4plus-anime (动漫强化)",
+        "video_esrgan_tta": "TTA 模式",
+        "video_esrgan_tta_info": "测试时增强，质量更好但速度慢4倍",
+        "video_waifu2x_model": "Waifu2x 模型",
+        "video_waifu2x_model_cunet": "CuNet (默认，高质量)",
+        "video_waifu2x_model_anime": "Anime Style Art (风格化)",
+        "video_waifu2x_model_photo": "Photo (真实照片)",
+        "video_waifu2x_tta": "TTA 模式",
+        "video_waifu2x_tta_info": "测试时增强，质量更好但速度慢8倍",
+        "video_gpu_device": "GPU 设备",
+        "video_gpu_device_info": "选择处理使用的 GPU，-1 为自动选择",
+        
+        # 输出分辨率
+        "video_output_resolution": "输出分辨率",
+        "video_output_resolution_info": "可选择预设分辨率或自定义",
+        "video_res_auto": "自动 (按倍数放大)",
+        "video_res_1080p": "1080p (1920×1080)",
+        "video_res_2k": "2K (2560×1440)",
+        "video_res_4k": "4K (3840×2160)",
+        "video_res_custom": "自定义",
+        "video_custom_width": "自定义宽度",
+        "video_custom_height": "自定义高度",
+        
+        # 视频编码器选项
+        "video_codec_h264": "H.264 (AVC) - 兼容性最佳",
+        "video_codec_h265": "H.265 (HEVC) - 高效压缩",
+        "video_codec_vp9": "VP9 (WebM) - 开源高效",
+        
+        # 视频输出设置
+        "video_output_format": "输出格式",
+        "video_output_format_info": "MP4兼容性最好，MKV支持多轨道，WebM开源高效",
+        "video_codec": "视频编码器",
+        "video_codec_info": "H.264兼容性最佳，H.265压缩效率更高(4K推荐)",
+        "video_crf": "压缩质量 (CRF)",
+        "video_crf_info": "数值越小画质越高，16为收藏级，18-23推荐日常使用",
+        "video_preset": "编码速度",
+        "video_preset_info": "速度越慢画质越好，文件越小",
+        "video_keep_audio": "保留音轨",
+        "video_fps_override": "自定义帧率 (留空=原始)",
+        "video_fps_info": "设置输出视频帧率，留空保持原始帧率",
+        "video_start_process": "开始处理视频",
+        "video_processing": "正在处理视频...",
+        "video_extracting": "正在提取帧...",
+        "video_upscaling": "正在超分处理帧 {current}/{total}",
+        "video_reassembling": "正在重组视频...",
+        "video_done": "视频处理完成",
+        "video_error": "视频处理失败: {error}",
+        "video_info": "视频信息: {width}x{height}, {fps} FPS, 时长: {duration}秒",
+        "video_frame_count": "预计帧数: {count}",
+        "video_result": "处理结果视频",
+        "video_download": "视频下载",
+        "video_keep_subtitles": "保留字幕轨",
+        "video_audio_tracks": "音轨数",
+        "video_subtitle_tracks": "字幕轨数",
+        "video_progress": "处理进度",
+        "video_format": "封装格式",
+        "video_codec_info": "视频编码",
+        "video_file_size": "文件大小",
+        "video_bitrate": "总比特率",
+        "video_cancel": "取消处理",
+        "video_cancelled": "任务已取消",
+        "video_resume": "继续处理",
+        "video_resume_found": "发现未完成的任务: {name} ({progress}%)",
+        "reset_eta_data": "重置ETA估算数据",
+        "reset_eta_confirm": "确定要重置所有ETA估算数据吗？",
+        "reset_eta_done": "ETA估算数据已重置",
+        
+        # 内存监控
+        "memory_warning": "⚠️ 内存使用率过高 ({usage}%)，建议关闭其他程序",
+        "memory_critical": "🚨 内存严重不足 ({usage}%)，可能导致程序崩溃",
+        "memory_info": "内存: {used:.1f}/{total:.1f} GB ({usage}%)",
+        
+        # 实时日志
+        "video_log": "实时日志",
+        "video_log_clear": "清除日志",
+        
+        # 视频处理预设模板
+        "video_preset_template": "快捷预设",
+        "video_preset_template_info": "选择预设自动配置参数，或选择自定义手动调整",
+        "video_preset_custom": "自定义",
+        "video_preset_fast": "快速预览 (极速编码/低画质)",
+        "video_preset_balanced": "均衡模式 (速度/画质平衡)",
+        "video_preset_hq": "高质量 (慢速编码/高画质)",
+        "video_preset_ultra": "极致画质 (超慢编码/最高画质)",
+        
+        # 编码速度选项（中文化）
+        "video_speed_ultrafast": "极速 (质量最低)",
+        "video_speed_superfast": "超快",
+        "video_speed_veryfast": "很快",
+        "video_speed_faster": "较快",
+        "video_speed_fast": "快速",
+        "video_speed_medium": "中等 (推荐)",
+        "video_speed_slow": "慢速",
+        "video_speed_slower": "较慢",
+        "video_speed_veryslow": "很慢 (质量最高)",
         
         # 图库缩略图
         "loading_thumbnail": "加载缩略图...",
@@ -411,6 +615,7 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "denoise_level": "Denoise Level",
         "denoise_level_info": "-1=none, 0=conservative, 3=strong",
         "advanced_options": "⚙️ Advanced Options",
+        "advanced_params": "⚙️ Output Settings",
         "syncgap_mode": "SyncGap Mode",
         "syncgap_info": "0=none, 1=accurate, 2=rough, 3=very rough(default)",
         "tile_size": "Tile Size",
@@ -523,6 +728,7 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "output_dir": "Output Dir",
         "program_dir": "Program Dir",
         "data_dir": "Data Dir",
+        "temp_dir": "Temp Dir",
         "config_file": "Config File",
         "preset_file": "Preset File",
         "custom_presets": "Custom Presets",
@@ -533,6 +739,54 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "help_presets": "Preset Guide",
         "help_faq": "FAQ",
         "help_about": "About",
+        "help_video": "Video Processing Guide",
+        "help_video_content": """
+## Video Processing (Beta) Guide
+
+### Overview
+Video processing upscales videos frame-by-frame, automatically extracting frames, processing, and reassembling into HD video. Multi-track audio and subtitles are preserved.
+
+### Engine Selection
+Reference: [SVFI Model Guide](https://doc.svfi.group/pages/model-spec/)
+
+| Engine | Use Case | Speed | Features |
+|--------|----------|-------|----------|
+| **Anime4K** | 2D Anime | ⚡Ultra-fast | Real-time, good for preview |
+| **RealCUGAN Pro** | 2D Anime | 🔵Medium | Excellent quality, recommended |
+| **RealCUGAN SE** | 2D Anime | 🔵Medium | Speed/quality balanced |
+| **RealESRGAN Anime** | 2D Anime | 🔵Medium | Adds detail, sharper image |
+| **waifu2x** | 2D Anime | 🟠Slower | Classic, stable algorithm |
+| **RealESRGAN** | Real-life/3D | 🔵Medium | General purpose |
+
+### Encoding Settings
+Reference: [SVFI Advanced Settings](https://doc.svfi.group/pages/advanced-settings/)
+
+**Codec Selection:**
+- **H.264 (AVC)**: Best compatibility
+- **H.265 (HEVC)**: Better compression, recommended for 2K/4K
+- **VP9**: Open-source, efficient
+
+**CRF Quality:**
+- **16**: Archival quality, larger file
+- **18-23**: Daily use recommended
+- **28+**: Quick preview, lower quality
+
+**Encoding Speed:**
+- Slower = better compression, smaller file
+- Recommended: **medium** for daily use
+- Use **slow** or **veryslow** for best quality
+
+### Denoise Settings
+Only RealCUGAN and waifu2x support denoising:
+- **-1**: No denoise (preserve original)
+- **0-1**: Light denoise
+- **2-3**: Strong denoise (use carefully)
+
+### Notes
+1. Video processing is time-consuming, test with short clips first
+2. For 4K output, use H.265 to reduce file size
+3. MKV format preserves multi-track audio and subtitles
+""",
         
         # Language Settings (added to settings)
         "language_settings": "Language Settings",
@@ -556,6 +810,163 @@ LANGUAGES: Dict[str, Dict[str, Any]] = {
         "gif_done": "GIF done, {count} frames total",
         "gif_error": "GIF processing failed: {error}",
         "gif_compare_note": "Note: GIF animations may not sync in slider comparison. Click below to view original and result separately.",
+        
+        # Video Processing (Beta)
+        "tab_video": "Video Process (Beta)",
+        "video_desc": "Upload video, select upscaling engine, process frame-by-frame, and reassemble into HD video. Multi-track audio/subtitles supported.",
+        "upload_video": "Upload Video",
+        
+        # Video engine options
+        "video_engine": "Upscaling Engine",
+        "video_engine_info": "Anime: Anime4K/RealCUGAN recommended. Real-life: RealESRGAN recommended",
+        "video_engine_anime4k": "Anime4K - Anime Ultra Fast",
+        "video_engine_realcugan_pro": "RealCUGAN Pro - Anime High Quality",
+        "video_engine_realcugan_se": "RealCUGAN SE - Anime Standard",
+        "video_engine_realesrgan_anime": "RealESRGAN Anime - Anime General",
+        "video_engine_waifu2x": "waifu2x CuNet - Anime Classic",
+        "video_engine_realesrgan": "RealESRGAN - Real-life General",
+        
+        # SR settings
+        "video_sr_settings": "Super Resolution Settings",
+        "video_scale": "Scale Factor",
+        "video_scale_info": "2x for 1080p→4K, 4x for 480p→1080p",
+        "video_denoise": "Denoise Level",
+        "video_denoise_info": "RealCUGAN/waifu2x only. Higher value = stronger denoising",
+        "video_denoise_none": "No Denoise",
+        "video_denoise_light": "Light Denoise (0)",
+        "video_denoise_medium": "Medium Denoise (1)",
+        "video_denoise_strong": "Strong Denoise (2)",
+        "video_denoise_max": "Max Denoise (3)",
+        
+        # Engine-specific settings
+        "video_engine_settings": "Engine-Specific Settings",
+        "video_a4k_mode": "Anime4K Processing Mode",
+        "video_a4k_mode_native": "Native Mode (Ultra Fast)",
+        "video_a4k_mode_builtin": "AIS Built-in Mode (Adjustable)",
+        "video_a4k_mode_native_info": "⚡ Ultra Fast: Direct video processing by Anime4KCPP\n⚠️ Encoding settings won't apply (CRF/preset etc.), cancel button won't stop processing",
+        "video_a4k_mode_builtin_info": "🔧 Flexible: Batch frame processing with FFmpeg encoding, avoids GPU re-init\n✅ Full encoding control, supports cancellation",
+        "video_a4k_batch_size": "Batch Size (Frames)",
+        "video_a4k_batch_size_info": "Frames per batch, higher = faster but more memory",
+        "video_segment_duration": "Segment Duration (sec)",
+        "video_segment_duration_info": "Split video into smaller segments to avoid memory overflow. 0=no split (small videos only)",
+        "video_segment_processing": "Segment Processing",
+        "video_segment_status": "Processing segment {current}/{total}",
+        "video_a4k_model": "Anime4K Model",
+        "video_a4k_model_acnet": "ACNet (Default)",
+        "video_a4k_model_acnet_gan": "ACNet GAN (High Quality)",
+        "video_a4k_processor": "Anime4K Processor",
+        "video_a4k_processor_cuda": "CUDA (NVIDIA GPU)",
+        "video_a4k_processor_opencl": "OpenCL (Universal GPU)",
+        "video_a4k_processor_cpu": "CPU (Compatibility Mode)",
+        "video_a4k_device": "GPU Device Index",
+        "video_native_mode_warning": "⚠️ In native mode, codec/CRF/speed preset won't apply",
+        "video_cugan_model": "RealCUGAN Model Type",
+        "video_cugan_model_pro": "Pro (High Quality)",
+        "video_cugan_model_se": "SE (Standard Efficiency)",
+        "video_cugan_model_nose": "Nose (No Sharpening)",
+        "video_cugan_syncgap": "Sync Gap",
+        "video_cugan_syncgap_info": "Higher = faster but may have minor artifacts, 0 = frame-by-frame",
+        "video_esrgan_model": "RealESRGAN Model",
+        "video_esrgan_model_anime": "AnimevideV3 (Anime)",
+        "video_esrgan_model_x4plus": "x4plus (General)",
+        "video_esrgan_model_anime_x4plus": "x4plus-anime (Anime Enhanced)",
+        "video_esrgan_tta": "TTA Mode",
+        "video_esrgan_tta_info": "Test-Time Augmentation, better quality but 4x slower",
+        "video_waifu2x_model": "Waifu2x Model",
+        "video_waifu2x_model_cunet": "CuNet (Default, High Quality)",
+        "video_waifu2x_model_anime": "Anime Style Art (Stylized)",
+        "video_waifu2x_model_photo": "Photo (Real Photos)",
+        "video_waifu2x_tta": "TTA Mode",
+        "video_waifu2x_tta_info": "Test-Time Augmentation, better quality but 8x slower",
+        "video_gpu_device": "GPU Device",
+        "video_gpu_device_info": "Select GPU for processing, -1 for auto-select",
+        
+        # Output resolution
+        "video_output_resolution": "Output Resolution",
+        "video_output_resolution_info": "Choose preset resolution or custom",
+        "video_res_auto": "Auto (by scale factor)",
+        "video_res_1080p": "1080p (1920×1080)",
+        "video_res_2k": "2K (2560×1440)",
+        "video_res_4k": "4K (3840×2160)",
+        "video_res_custom": "Custom",
+        "video_custom_width": "Custom Width",
+        "video_custom_height": "Custom Height",
+        
+        # Video codec options
+        "video_codec_h264": "H.264 (AVC) - Best Compatibility",
+        "video_codec_h265": "H.265 (HEVC) - Efficient Compression",
+        "video_codec_vp9": "VP9 (WebM) - Open Efficient",
+        
+        # Video output settings
+        "video_output_format": "Output Format",
+        "video_output_format_info": "MP4 best compatibility, MKV multi-track, WebM open efficient",
+        "video_codec": "Video Codec",
+        "video_codec_info": "H.264 best compatibility, H.265 better compression (4K recommended)",
+        "video_crf": "Quality (CRF)",
+        "video_crf_info": "Lower = higher quality. 16 archival, 18-23 daily use recommended",
+        "video_preset": "Encoding Speed",
+        "video_preset_info": "Slower = better quality, smaller file",
+        "video_keep_audio": "Keep Audio",
+        "video_fps_override": "Custom FPS (empty=original)",
+        "video_fps_info": "Set output video frame rate, leave empty to keep original",
+        "video_start_process": "Start Video Processing",
+        "video_processing": "Processing video...",
+        "video_extracting": "Extracting frames...",
+        "video_upscaling": "Upscaling frame {current}/{total}",
+        "video_reassembling": "Reassembling video...",
+        "video_done": "Video processing complete",
+        "video_error": "Video processing failed: {error}",
+        "video_info": "Video info: {width}x{height}, {fps} FPS, Duration: {duration}s",
+        "video_frame_count": "Estimated frames: {count}",
+        "video_result": "Processed Video",
+        "video_download": "Download Video",
+        "video_keep_subtitles": "Keep Subtitles",
+        "video_audio_tracks": "Audio Tracks",
+        "video_subtitle_tracks": "Subtitle Tracks",
+        "video_progress": "Processing Progress",
+        "video_format": "Format",
+        "video_codec_info": "Video Codec",
+        "video_file_size": "File Size",
+        "video_bitrate": "Bitrate",
+        "video_cancel": "Cancel",
+        "video_cancelled": "Task Cancelled",
+        "video_resume": "Resume",
+        "video_resume_found": "Found unfinished task: {name} ({progress}%)",
+        "reset_eta_data": "Reset ETA Data",
+        "reset_eta_confirm": "Are you sure to reset all ETA estimation data?",
+        "reset_eta_done": "ETA estimation data has been reset",
+        
+        # Memory monitoring
+        "memory_warning": "⚠️ High memory usage ({usage}%), consider closing other programs",
+        "memory_critical": "🚨 Critical memory shortage ({usage}%), may cause crash",
+        "memory_info": "Memory: {used:.1f}/{total:.1f} GB ({usage}%)",
+        
+        # Real-time log
+        "video_log": "Real-time Log",
+        "video_log_clear": "Clear Log",
+        
+        # Video preset templates
+        "video_preset_template": "Quick Preset",
+        "video_preset_template_info": "Select preset to auto-configure, or choose Custom to adjust manually",
+        "video_preset_custom": "Custom",
+        "video_preset_fast": "Fast Preview (fastest/low quality)",
+        "video_preset_balanced": "Balanced (speed/quality trade-off)",
+        "video_preset_hq": "High Quality (slow encoding/high quality)",
+        "video_preset_ultra": "Ultra Quality (very slow/best quality)",
+        
+        # Encoding speed options
+        "video_speed_ultrafast": "Ultrafast (lowest quality)",
+        "video_speed_superfast": "Superfast",
+        "video_speed_veryfast": "Veryfast",
+        "video_speed_faster": "Faster",
+        "video_speed_fast": "Fast",
+        "video_speed_medium": "Medium (recommended)",
+        "video_speed_slow": "Slow",
+        "video_speed_slower": "Slower",
+        "video_speed_veryslow": "Veryslow (highest quality)",
+        "video_no_ffmpeg": "FFmpeg not found, cannot process video",
+        "video_too_large": "Video file too large, recommend less than 500MB",
+        "video_unsupported": "Unsupported video format",
         
         # Gallery Thumbnail
         "loading_thumbnail": "Loading thumbnail...",
