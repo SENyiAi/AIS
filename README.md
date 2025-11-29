@@ -44,7 +44,8 @@
 1. 确保已安装 Python 3.10+
 2. 下载 `AIS-vX.X.X-Lite.zip` 并解压
 3. 运行 `pip install -r requirements.txt`
-4. 双击 `启动.bat` 运行
+4. 下载 `ffmpeg8.0.1` 放置于 `前置` 目录
+5. 双击 `启动.bat` 运行
 
 ### 方式二：从源码运行
 
