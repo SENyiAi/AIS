@@ -152,4 +152,4 @@ A one-stop AI image super-resolution tool integrating multiple top-tier upscalin
 
 ### License
 
-MIT License
+GPL-3.0 license
