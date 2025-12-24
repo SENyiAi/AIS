@@ -12,12 +12,15 @@ AI 图像超分辨率工具，集成多个超分引擎，提供 Web 界面。
 
 - 多引擎支持: Real-CUGAN、Real-ESRGAN、Waifu2x、Anime4KCPP
 - Web 界面: 基于 Gradio
+- 图像超分: 单图/批量处理
 - 动图支持: GIF/WebP 超分处理
+- 视频超分: 支持 MP4/AVI/MKV 等格式，逐帧处理或原生处理
 - 多语言: 简体中文和英文
 - GPU 加速: Vulkan (NVIDIA/AMD/Intel)
 - 开箱即用: Full版本内置环境
 - 实时预览: 滑动条对比效果
 - 自定义预设: 保存常用参数
+- 断点续传: 视频处理支持中断恢复
 <div align="center">
   <img src="https://github.com/user-attachments/assets/a39b3aee-86ba-43a2-aa26-0ed6acfd83a3" height="200" alt="界面预览" />
   <img src="https://github.com/user-attachments/assets/b24ddf12-7cc3-4c7c-82aa-386b998ed269" height="200" alt="噪点去除" />
@@ -72,7 +75,15 @@ python AIS_WebUI.py
 | Waifu2x | 经典算法 | 快速处理 |
 | Anime4KCPP | 极速处理 | 视频、GIF |
 
-## 动图超分
+## 功能说明
+
+### 图像超分
+- 支持单张图片或批量处理
+- 多种超分引擎可选
+- 自定义放大倍数和降噪强度
+- 实时预览对比效果
+
+### 动图超分
 
 支持 GIF 动态图超分辨率处理。
 
@@ -81,6 +92,31 @@ python AIS_WebUI.py
 - GIF: 256 色，兼容性好
 
 处理方式：逐帧超分后重组，可选 FFmpeg 合成。
+
+### 视频超分 (Beta)
+
+支持视频文件超分辨率处理，两种模式：
+
+**Anime4K 原生模式 (极速)**
+- 直接处理视频，无需逐帧提取
+- 速度最快，适合长视频
+- 自动保留音轨和字幕
+- 支持 CUDA/OpenCL 加速
+
+**逐帧处理模式 (高质量)**
+- 支持所有超分引擎
+- 逐帧提取、处理、重组
+- 支持断点续传
+- 可自定义编码参数
+
+功能特性：
+- 输入格式: MP4/AVI/MKV/MOV/FLV 等
+- 输出格式: MP4/WebM/MKV
+- 视频编码: H.264/H.265/VP9
+- 保留音轨: 支持多音轨
+- 保留字幕: 内嵌/外挂字幕
+- 断点续传: 中断后可继续处理
+- 质量控制: CRF/比特率/编码速度
 
 ## 高级参数
 
