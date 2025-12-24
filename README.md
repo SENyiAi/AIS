@@ -43,9 +43,20 @@
 **精简版使用步骤：**
 1. 确保已安装 Python 3.10+
 2. 下载 `AIS-vX.X.X-Lite.zip` 并解压
-3. 运行 `pip install -r requirements.txt`
-   - 国内用户推荐使用清华源加速: `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
-4. 双击 `启动.bat` 运行
+3. **推荐方式**：双击运行 `安装依赖.bat`
+   - 自动创建虚拟环境
+   - 默认使用清华源加速安装（国内用户）
+4. **手动方式**：
+   ```bash
+   # 创建虚拟环境
+   python -m venv venv
+   venv\Scripts\activate  # Windows
+   # source venv/bin/activate  # Linux/Mac
+   
+   # 安装依赖（国内用户使用清华源）
+   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+   ```
+5. 双击 `启动.bat` 运行
 
 ### 方式二：从源码运行
 
@@ -54,10 +65,16 @@
 git clone https://github.com/SENyiAi/AIS.git
 cd AIS
 
+# 推荐：创建虚拟环境
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate  # Windows
+
 # 安装依赖
-pip install -r requirements.txt
-# 国内用户推荐使用清华源加速
-# pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 国内用户（推荐使用清华源）
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 国外用户
+# pip install -r requirements.txt
 
 # 下载模型文件（放入 模型/ 目录）
 # - realcugan-ncnn-vulkan
