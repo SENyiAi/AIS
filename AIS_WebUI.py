@@ -34,22 +34,14 @@ def install_gradio() -> bool:
         import gradio
         return True
     except ImportError:
-        print("[提示] Gradio未安装, 正在尝试安装...")
-        print("[安装] 使用pip安装Gradio...")
-        print("[提示] 国内用户建议手动使用清华源安装: pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple")
-        
+        print("[提示] Gradio未安装，正在安装...")
         try:
-            subprocess.check_call([
-                sys.executable, "-m", "pip", "install", 
-                "gradio", "--quiet"
-            ])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "gradio", "--quiet"])
             print("[完成] Gradio安装成功")
             return True
-        except subprocess.CalledProcessError as e:
-            print(f"[错误] Gradio安装失败: {e}")
-            print("[提示] 请尝试手动安装:")
-            print("       pip install gradio")
-            print("       或使用清华源: pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple")
+        except subprocess.CalledProcessError:
+            print("[错误] 安装失败，请手动执行: pip install gradio")
+            print("       国内用户: pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple")
             return False
 
 # 安装Gradio
