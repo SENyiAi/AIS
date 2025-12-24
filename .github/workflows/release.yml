@@ -55,9 +55,12 @@ jobs:
         $url = "https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "realcugan.zip"
         Expand-Archive -Path "realcugan.zip" -DestinationPath "temp_cugan"
-        Move-Item "temp_cugan/*" "模型/realcugan-ncnn-vulkan-20220728-windows" -ErrorAction SilentlyContinue
-        if (-not (Test-Path "模型/realcugan-ncnn-vulkan-20220728-windows")) {
-            Move-Item "temp_cugan/realcugan-ncnn-vulkan-20220728-windows" "模型/" -ErrorAction SilentlyContinue
+        # 重命名为简洁的文件夹名称（去除版本号和时间戳）
+        $sourceDir = Get-ChildItem -Path "temp_cugan" -Directory | Select-Object -First 1
+        if ($sourceDir) {
+            Move-Item "$($sourceDir.FullName)" "模型/realcugan-ncnn-vulkan" -ErrorAction Stop
+        } else {
+            Move-Item "temp_cugan/*" "模型/realcugan-ncnn-vulkan" -ErrorAction Stop
         }
         Remove-Item "realcugan.zip" -ErrorAction SilentlyContinue
         Remove-Item "temp_cugan" -Recurse -ErrorAction SilentlyContinue
@@ -68,9 +71,12 @@ jobs:
         $url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "realesrgan.zip"
         Expand-Archive -Path "realesrgan.zip" -DestinationPath "temp_esrgan"
-        Move-Item "temp_esrgan/*" "模型/realesrgan-ncnn-vulkan-20220424-windows" -ErrorAction SilentlyContinue
-        if (-not (Test-Path "模型/realesrgan-ncnn-vulkan-20220424-windows")) {
-            Move-Item "temp_esrgan/realesrgan-ncnn-vulkan-20220424-windows" "模型/" -ErrorAction SilentlyContinue
+        # 重命名为简洁的文件夹名称（去除版本号和时间戳）
+        $sourceDir = Get-ChildItem -Path "temp_esrgan" -Directory | Select-Object -First 1
+        if ($sourceDir) {
+            Move-Item "$($sourceDir.FullName)" "模型/realesrgan-ncnn-vulkan" -ErrorAction Stop
+        } else {
+            Move-Item "temp_esrgan/*" "模型/realesrgan-ncnn-vulkan" -ErrorAction Stop
         }
         Remove-Item "realesrgan.zip" -ErrorAction SilentlyContinue
         Remove-Item "temp_esrgan" -Recurse -ErrorAction SilentlyContinue
@@ -81,9 +87,12 @@ jobs:
         $url = "https://github.com/nihui/waifu2x-ncnn-vulkan/releases/download/20250915/waifu2x-ncnn-vulkan-20250915-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "waifu2x.zip"
         Expand-Archive -Path "waifu2x.zip" -DestinationPath "temp_waifu2x"
-        Move-Item "temp_waifu2x/*" "模型/waifu2x-ncnn-vulkan-20250915-windows" -ErrorAction SilentlyContinue
-        if (-not (Test-Path "模型/waifu2x-ncnn-vulkan-20250915-windows")) {
-            Move-Item "temp_waifu2x/waifu2x-ncnn-vulkan-20250915-windows" "模型/" -ErrorAction SilentlyContinue
+        # 重命名为简洁的文件夹名称（去除版本号和时间戳）
+        $sourceDir = Get-ChildItem -Path "temp_waifu2x" -Directory | Select-Object -First 1
+        if ($sourceDir) {
+            Move-Item "$($sourceDir.FullName)" "模型/waifu2x-ncnn-vulkan" -ErrorAction Stop
+        } else {
+            Move-Item "temp_waifu2x/*" "模型/waifu2x-ncnn-vulkan" -ErrorAction Stop
         }
         Remove-Item "waifu2x.zip" -ErrorAction SilentlyContinue
         Remove-Item "temp_waifu2x" -Recurse -ErrorAction SilentlyContinue
@@ -96,19 +105,19 @@ jobs:
         # 使用 7-Zip 解压
         $7zPath = "C:\Program Files\7-Zip\7z.exe"
         & $7zPath x "anime4k.7z" -o"temp_anime4k" -y
-        # 检查解压后的结构
+        # 重命名为简洁的文件夹名称（去除版本号）
         $innerDir = Get-ChildItem -Path "temp_anime4k" -Directory | Select-Object -First 1
         if ($innerDir) {
-            Move-Item "$($innerDir.FullName)" "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC" -ErrorAction SilentlyContinue
+            Move-Item "$($innerDir.FullName)" "模型/anime4kcpp" -ErrorAction Stop
         } else {
             # 如果没有嵌套目录，直接移动
-            New-Item -ItemType Directory -Force -Path "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC"
-            Move-Item "temp_anime4k/*" "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC/" -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path "模型/anime4kcpp"
+            Move-Item "temp_anime4k/*" "模型/anime4kcpp/" -ErrorAction Stop
         }
         Remove-Item "anime4k.7z" -ErrorAction SilentlyContinue
         Remove-Item "temp_anime4k" -Recurse -ErrorAction SilentlyContinue
-        echo "Anime4KCPP downloaded to: 模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC"
-        Get-ChildItem "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC" | ForEach-Object { Write-Host $_.Name }
+        echo "Anime4KCPP downloaded to: 模型/anime4kcpp"
+        Get-ChildItem "模型/anime4kcpp" | ForEach-Object { Write-Host $_.Name }
     
     - name: Download FFmpeg
       shell: pwsh
@@ -119,16 +128,16 @@ jobs:
         Invoke-WebRequest -Uri $url -OutFile "ffmpeg.7z"
         # 使用 7-Zip 解压
         & $7zPath x "ffmpeg.7z" -o"temp_ffmpeg" -y
-        # FFmpeg 解压后有一个嵌套目录，需要重命名
+        # 重命名为简洁的文件夹名称（去除版本号）
         $innerDir = Get-ChildItem -Path "temp_ffmpeg" -Directory | Select-Object -First 1
         if ($innerDir) {
-            Move-Item "$($innerDir.FullName)" "前置/ffmpeg-8.0.1-essentials_build" -ErrorAction SilentlyContinue
+            Move-Item "$($innerDir.FullName)" "前置/ffmpeg" -ErrorAction Stop
         }
         Remove-Item "ffmpeg.7z" -ErrorAction SilentlyContinue
         Remove-Item "temp_ffmpeg" -Recurse -ErrorAction SilentlyContinue
         # 显示下载的 FFmpeg 信息
-        echo "FFmpeg downloaded to: 前置/ffmpeg-8.0.1-essentials_build"
-        Get-ChildItem "前置/ffmpeg-8.0.1-essentials_build/bin" -ErrorAction SilentlyContinue | ForEach-Object { 
+        echo "FFmpeg downloaded to: 前置/ffmpeg"
+        Get-ChildItem "前置/ffmpeg/bin" -ErrorAction SilentlyContinue | ForEach-Object { 
           Write-Host "$($_.Name) - $([math]::Round($_.Length / 1MB, 2)) MB" 
         }
     
@@ -138,11 +147,11 @@ jobs:
         echo "=== 验证模型目录结构 ==="
         Get-ChildItem -Path "模型" -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
         
-        $cugan = Test-Path "模型/realcugan-ncnn-vulkan-20220728-windows/realcugan-ncnn-vulkan.exe"
-        $esrgan = Test-Path "模型/realesrgan-ncnn-vulkan-20220424-windows/realesrgan-ncnn-vulkan.exe"
-        $waifu2x = Test-Path "模型/waifu2x-ncnn-vulkan-20250915-windows/waifu2x-ncnn-vulkan.exe"
-        $anime4k = Test-Path "模型/Anime4KCPP-CLI-v3.0.0-x64-MSVC/ac_cli.exe"
-        $ffmpeg = Test-Path "前置/ffmpeg-8.0.1-essentials_build/bin/ffmpeg.exe"
+        $cugan = Test-Path "模型/realcugan-ncnn-vulkan/realcugan-ncnn-vulkan.exe"
+        $esrgan = Test-Path "模型/realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan.exe"
+        $waifu2x = Test-Path "模型/waifu2x-ncnn-vulkan/waifu2x-ncnn-vulkan.exe"
+        $anime4k = Test-Path "模型/anime4kcpp/ac_cli.exe"
+        $ffmpeg = Test-Path "前置/ffmpeg/bin/ffmpeg.exe"
         
         echo "CUGAN exe exists: $cugan"
         echo "ESRGAN exe exists: $esrgan"
@@ -189,7 +198,7 @@ jobs:
         # 验证 pip 安装
         & "前置/python-3.12.10-embed-amd64/python.exe" -m pip --version
         
-        # 安装 Gradio 和依赖（直接安装到 site-packages）
+        # 安装 Gradio 和依赖
         & "前置/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow --no-warn-script-location
         
         # 验证安装
@@ -355,6 +364,7 @@ jobs:
           1. 确保已安装 Python 3.10 或更高版本
           2. 解压缩到任意目录
           3. 运行 `pip install -r requirements.txt` 安装依赖
+             - 国内用户推荐使用清华源加速: `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
           4. 双击 `启动.bat` 运行
           
           ---
