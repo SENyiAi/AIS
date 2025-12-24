@@ -3543,9 +3543,24 @@ def process_video(
     if not video_file.exists():
         return None, "[错误] 视频文件不存在"
     
-    # 创建临时目录
-    work_dir = TEMP_DIR / f"video_{uuid.uuid4().hex[:8]}"
-    work_dir.mkdir(parents=True, exist_ok=True)
+    # 检查是否有可恢复的进度（断点续传）
+    resumable_tasks = find_resumable_video_tasks()
+    work_dir = None
+    resumed_progress = None
+    
+    for task_dir, progress in resumable_tasks:
+        if progress.video_path == video_path and progress.engine == engine and progress.scale == scale:
+            work_dir = task_dir
+            resumed_progress = progress
+            log_info(f"[视频] 发现可恢复任务，已处理 {progress.processed_count}/{progress.total_frames} 帧")
+            if progress_callback:
+                progress_callback(f"恢复任务: 已处理 {progress.processed_count}/{progress.total_frames} 帧", 0)
+            break
+    
+    # 如果没有可恢复的任务，创建新的临时目录
+    if work_dir is None:
+        work_dir = TEMP_DIR / f"video_{uuid.uuid4().hex[:8]}"
+        work_dir.mkdir(parents=True, exist_ok=True)
     
     # 处理中文文件名: 使用 Windows 短路径（8.3格式）避免复制
     original_name = video_file.name
@@ -3732,47 +3747,74 @@ def process_video(
     
     audio_paths: List[str] = []
     subtitle_paths: List[str] = []
+    frame_paths: List[str] = []
+    fps: float = 0
     
     try:
-        # 步骤1: 提取音轨和字幕
-        if progress_callback:
-            progress_callback("正在提取音轨和字幕...", 0)
+        # 如果是恢复任务，跳过帧提取和音频提取
+        if resumed_progress:
+            log_info("[视频] 恢复任务，跳过帧提取和音频提取")
+            # 从进度中恢复数据
+            audio_paths = resumed_progress.audio_paths
+            subtitle_paths = resumed_progress.subtitle_paths
+            fps = resumed_progress.fps
+            total_frames = resumed_progress.total_frames
+            
+            # 获取已提取的帧
+            frame_paths = sorted([str(f) for f in frames_dir.glob("frame_*.png")])
+            if len(frame_paths) != total_frames:
+                log_info(f"[警告] 帧数不匹配，重新提取。预期 {total_frames} 帧，实际 {len(frame_paths)} 帧")
+                resumed_progress = None  # 重置，重新提取
         
-        main_audio, audio_paths, subtitle_paths, error = extract_all_streams(
-            temp_video_path, work_dir, keep_audio, keep_subtitles, progress_callback
-        )
+        # 新任务或帧数不匹配时，执行提取
+        if not resumed_progress:
+            # 步骤1: 提取音轨和字幕
+            if progress_callback:
+                progress_callback("正在提取音轨和字幕...", 0)
+            
+            main_audio, audio_paths, subtitle_paths, error = extract_all_streams(
+                temp_video_path, work_dir, keep_audio, keep_subtitles, progress_callback
+            )
+            
+            if audio_paths:
+                log_info(f"[视频] 提取了 {len(audio_paths)} 个音轨")
+            if subtitle_paths:
+                log_info(f"[视频] 提取了 {len(subtitle_paths)} 个字幕轨")
+            
+            # 步骤2: 提取帧
+            if progress_callback:
+                progress_callback("正在提取视频帧...", None)
+            
+            frame_paths, fps, error = extract_video_frames(
+                temp_video_path, 
+                frames_dir,
+                fps=extract_fps,
+                progress_callback=progress_callback
+            )
+            
+            if error or not frame_paths:
+                return None, f"[错误] {error or '帧提取失败'}"
+            
+            total_frames = len(frame_paths)
+            log_info(f"[视频] 共 {total_frames} 帧需要处理")
         
-        if audio_paths:
-            log_info(f"[视频] 提取了 {len(audio_paths)} 个音轨")
-        if subtitle_paths:
-            log_info(f"[视频] 提取了 {len(subtitle_paths)} 个字幕轨")
-        
-        # 步骤2: 提取帧
-        if progress_callback:
-            progress_callback("正在提取视频帧...", None)
-        
-        frame_paths, fps, error = extract_video_frames(
-            temp_video_path, 
-            frames_dir,
-            fps=extract_fps,
-            progress_callback=progress_callback
-        )
-        
-        if error or not frame_paths:
-            return None, f"[错误] {error or '帧提取失败'}"
-        
-        total_frames = len(frame_paths)
-        log_info(f"[视频] 共 {total_frames} 帧需要处理")
-        
-        # 创建进度文件用于断点续传
+        # 创建或更新进度文件用于断点续传
         progress_file = work_dir / "progress.json"
-        video_progress = VideoProgress(
-            video_path=video_path,
-            work_dir=str(work_dir),
-            engine=engine,
-            scale=scale,
-            denoise=denoise,
-            total_frames=total_frames,
+        if resumed_progress:
+            video_progress = resumed_progress
+            # 更新可能改变的参数
+            video_progress.output_format = output_format
+            video_progress.codec = codec
+            video_progress.crf = crf
+            video_progress.preset = preset
+        else:
+            video_progress = VideoProgress(
+                video_path=video_path,
+                work_dir=str(work_dir),
+                engine=engine,
+                scale=scale,
+                denoise=denoise,
+                total_frames=total_frames,
             processed_count=0,
             fps=fps,
             audio_paths=audio_paths,
@@ -3993,22 +4035,38 @@ def process_video(
                 result_msg += f"包含 {len(subtitle_paths)} 个字幕轨\n"
             result_msg += f"保存至: {out_path.name}"
             
+            # 标记任务完成并删除进度文件
+            video_progress.completed = True
+            if progress_file.exists():
+                progress_file.unlink()
+            
             return str(out_path), result_msg
         else:
             return None, f"[错误] {msg}"
     
     except Exception as e:
         log_info(f"[视频] 处理异常: {e}")
+        # 保存当前进度
+        if 'video_progress' in locals() and 'progress_file' in locals():
+            try:
+                video_progress.save(progress_file)
+                log_info(f"[视频] 已保存进度到 {progress_file}")
+            except:
+                pass
         return None, f"[错误] 视频处理异常: {e}"
     
     finally:
-        # 清理临时文件
-        try:
-            import shutil
-            if work_dir.exists():
-                shutil.rmtree(work_dir)
-        except Exception as e:
-            log_info(f"[视频] 清理临时文件失败: {e}")
+        # 只在任务完成时清理临时文件，否则保留用于断点续传
+        if 'video_progress' in locals() and video_progress.completed:
+            try:
+                import shutil
+                if work_dir.exists():
+                    shutil.rmtree(work_dir)
+                    log_info(f"[视频] 已清理临时目录: {work_dir}")
+            except Exception as e:
+                log_info(f"[视频] 清理临时文件失败: {e}")
+        else:
+            log_info(f"[视频] 保留临时目录用于断点续传: {work_dir}")
 
 
 def get_supported_video_formats() -> List[str]:
