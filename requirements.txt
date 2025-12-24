@@ -1,1 +1,12 @@
+# AIS 依赖包列表
+# 
+# 安装方法:
+# pip install -r requirements.txt
+#
+# 国内用户推荐使用清华源加速安装:
+# pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+#
+# 或配置永久使用清华源:
+# pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
 gradio>=4.0.0

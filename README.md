@@ -44,6 +44,7 @@
 1. 确保已安装 Python 3.10+
 2. 下载 `AIS-vX.X.X-Lite.zip` 并解压
 3. 运行 `pip install -r requirements.txt`
+   - 国内用户推荐使用清华源加速: `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
 4. 双击 `启动.bat` 运行
 
 ### 方式二：从源码运行
@@ -55,6 +56,8 @@ cd AIS
 
 # 安装依赖
 pip install -r requirements.txt
+# 国内用户推荐使用清华源加速
+# pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 下载模型文件（放入 模型/ 目录）
 # - realcugan-ncnn-vulkan
