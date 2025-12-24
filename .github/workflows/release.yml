@@ -175,6 +175,11 @@ jobs:
     - name: Download Python Embed and install Gradio
       shell: pwsh
       run: |
+        # 设置UTF-8编码以支持中文路径
+        $env:PYTHONIOENCODING = "utf-8"
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $OutputEncoding = [System.Text.Encoding]::UTF8
+        
         New-Item -ItemType Directory -Force -Path "前置"
         
         # 下载 Python 3.12.10 嵌入版 (稳定版，兼容性好)
@@ -191,15 +196,19 @@ jobs:
         New-Item -ItemType Directory -Force -Path "前置/python-3.12.10-embed-amd64/Lib/site-packages"
         New-Item -ItemType Directory -Force -Path "前置/python-3.12.10-embed-amd64/Scripts"
         
-        # 下载并安装 pip
+        # 下载并安装 pip（设置UTF-8环境变量）
         Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "前置/python-3.12.10-embed-amd64/get-pip.py"
-        & "前置/python-3.12.10-embed-amd64/python.exe" "前置/python-3.12.10-embed-amd64/get-pip.py" --no-warn-script-location
+        $env:PYTHONIOENCODING = "utf-8"
+        & "前置/python-3.12.10-embed-amd64/python.exe" "前置/python-3.12.10-embed-amd64/get-pip.py" --no-warn-script-location 2>&1 | Out-Null
         
-        # 验证 pip 安装
-        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip --version
+        # 验证 pip 安装（抑制版本输出避免编码错误）
+        $pipVersion = & "前置/python-3.12.10-embed-amd64/python.exe" -m pip --version 2>&1
+        if ($LASTEXITCODE -eq 0) {
+          echo "pip installed successfully"
+        }
         
         # 安装 Gradio 和依赖
-        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow --no-warn-script-location
+        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow --no-warn-script-location --disable-pip-version-check -q
         
         # 验证安装
         echo "=== Python 环境验证 ==="
