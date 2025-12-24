@@ -235,8 +235,8 @@ jobs:
         
         New-Item -ItemType Directory -Force -Path $packageName
         
-        # 复制核心文件并验证
-        $coreFiles = @("AIS.py", "AIS_WebUI.py", "i18n.py", "requirements.txt", "启动.bat")
+        # 复制核心文件并验证（Lite版本不包含Python环境）
+        $coreFiles = @("AIS.py", "AIS_WebUI.py", "i18n.py", "requirements.txt", "启动.bat", "安装依赖.bat")
         foreach ($file in $coreFiles) {
           Copy-Item $file -Destination $packageName -ErrorAction Stop
           echo "Copied: $file"
@@ -363,9 +363,16 @@ jobs:
           ### 🔧 精简版使用方法
           1. 确保已安装 Python 3.10 或更高版本
           2. 解压缩到任意目录
-          3. 运行 `pip install -r requirements.txt` 安装依赖
-             - 国内用户推荐使用清华源加速: `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
-          4. 双击 `启动.bat` 运行
+          3. **推荐方式**：双击运行 `安装依赖.bat`
+             - 自动创建虚拟环境
+             - 默认使用清华源加速安装（国内用户）
+          4. **手动方式**：
+             ```
+             python -m venv venv
+             venv\Scripts\activate
+             pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+             ```
+          5. 双击 `启动.bat` 运行
           
           ---
           
