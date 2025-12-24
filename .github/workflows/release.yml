@@ -51,16 +51,16 @@ jobs:
     - name: Download Real-CUGAN
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path "模型"
+        New-Item -ItemType Directory -Force -Path "models"
         $url = "https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-windows.zip"
         Invoke-WebRequest -Uri $url -OutFile "realcugan.zip"
         Expand-Archive -Path "realcugan.zip" -DestinationPath "temp_cugan"
         # 重命名为简洁的文件夹名称（去除版本号和时间戳）
         $sourceDir = Get-ChildItem -Path "temp_cugan" -Directory | Select-Object -First 1
         if ($sourceDir) {
-            Move-Item "$($sourceDir.FullName)" "模型/realcugan-ncnn-vulkan" -ErrorAction Stop
+            Move-Item "$($sourceDir.FullName)" "models/realcugan-ncnn-vulkan" -ErrorAction Stop
         } else {
-            Move-Item "temp_cugan/*" "模型/realcugan-ncnn-vulkan" -ErrorAction Stop
+            Move-Item "temp_cugan/*" "models/realcugan-ncnn-vulkan" -ErrorAction Stop
         }
         Remove-Item "realcugan.zip" -ErrorAction SilentlyContinue
         Remove-Item "temp_cugan" -Recurse -ErrorAction SilentlyContinue
@@ -74,9 +74,9 @@ jobs:
         # 重命名为简洁的文件夹名称（去除版本号和时间戳）
         $sourceDir = Get-ChildItem -Path "temp_esrgan" -Directory | Select-Object -First 1
         if ($sourceDir) {
-            Move-Item "$($sourceDir.FullName)" "模型/realesrgan-ncnn-vulkan" -ErrorAction Stop
+            Move-Item "$($sourceDir.FullName)" "models/realesrgan-ncnn-vulkan" -ErrorAction Stop
         } else {
-            Move-Item "temp_esrgan/*" "模型/realesrgan-ncnn-vulkan" -ErrorAction Stop
+            Move-Item "temp_esrgan/*" "models/realesrgan-ncnn-vulkan" -ErrorAction Stop
         }
         Remove-Item "realesrgan.zip" -ErrorAction SilentlyContinue
         Remove-Item "temp_esrgan" -Recurse -ErrorAction SilentlyContinue
@@ -90,9 +90,9 @@ jobs:
         # 重命名为简洁的文件夹名称（去除版本号和时间戳）
         $sourceDir = Get-ChildItem -Path "temp_waifu2x" -Directory | Select-Object -First 1
         if ($sourceDir) {
-            Move-Item "$($sourceDir.FullName)" "模型/waifu2x-ncnn-vulkan" -ErrorAction Stop
+            Move-Item "$($sourceDir.FullName)" "models/waifu2x-ncnn-vulkan" -ErrorAction Stop
         } else {
-            Move-Item "temp_waifu2x/*" "模型/waifu2x-ncnn-vulkan" -ErrorAction Stop
+            Move-Item "temp_waifu2x/*" "models/waifu2x-ncnn-vulkan" -ErrorAction Stop
         }
         Remove-Item "waifu2x.zip" -ErrorAction SilentlyContinue
         Remove-Item "temp_waifu2x" -Recurse -ErrorAction SilentlyContinue
@@ -108,21 +108,21 @@ jobs:
         # 重命名为简洁的文件夹名称（去除版本号）
         $innerDir = Get-ChildItem -Path "temp_anime4k" -Directory | Select-Object -First 1
         if ($innerDir) {
-            Move-Item "$($innerDir.FullName)" "模型/anime4kcpp" -ErrorAction Stop
+            Move-Item "$($innerDir.FullName)" "models/anime4kcpp" -ErrorAction Stop
         } else {
             # 如果没有嵌套目录，直接移动
-            New-Item -ItemType Directory -Force -Path "模型/anime4kcpp"
-            Move-Item "temp_anime4k/*" "模型/anime4kcpp/" -ErrorAction Stop
+            New-Item -ItemType Directory -Force -Path "models/anime4kcpp"
+            Move-Item "temp_anime4k/*" "models/anime4kcpp/" -ErrorAction Stop
         }
         Remove-Item "anime4k.7z" -ErrorAction SilentlyContinue
         Remove-Item "temp_anime4k" -Recurse -ErrorAction SilentlyContinue
-        echo "Anime4KCPP downloaded to: 模型/anime4kcpp"
-        Get-ChildItem "模型/anime4kcpp" | ForEach-Object { Write-Host $_.Name }
+        echo "Anime4KCPP downloaded to: models/anime4kcpp"
+        Get-ChildItem "models/anime4kcpp" | ForEach-Object { Write-Host $_.Name }
     
     - name: Download FFmpeg
       shell: pwsh
       run: |
-        New-Item -ItemType Directory -Force -Path "前置"
+        New-Item -ItemType Directory -Force -Path "prereq"
         $url = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-8.0.1-essentials_build.7z"
         $7zPath = "C:\Program Files\7-Zip\7z.exe"
         Invoke-WebRequest -Uri $url -OutFile "ffmpeg.7z"
@@ -131,27 +131,27 @@ jobs:
         # 重命名为简洁的文件夹名称（去除版本号）
         $innerDir = Get-ChildItem -Path "temp_ffmpeg" -Directory | Select-Object -First 1
         if ($innerDir) {
-            Move-Item "$($innerDir.FullName)" "前置/ffmpeg" -ErrorAction Stop
+            Move-Item "$($innerDir.FullName)" "prereq/ffmpeg" -ErrorAction Stop
         }
         Remove-Item "ffmpeg.7z" -ErrorAction SilentlyContinue
         Remove-Item "temp_ffmpeg" -Recurse -ErrorAction SilentlyContinue
         # 显示下载的 FFmpeg 信息
-        echo "FFmpeg downloaded to: 前置/ffmpeg"
-        Get-ChildItem "前置/ffmpeg/bin" -ErrorAction SilentlyContinue | ForEach-Object { 
+        echo "FFmpeg downloaded to: prereq/ffmpeg"
+        Get-ChildItem "prereq/ffmpeg/bin" -ErrorAction SilentlyContinue | ForEach-Object { 
           Write-Host "$($_.Name) - $([math]::Round($_.Length / 1MB, 2)) MB" 
         }
     
     - name: Verify model directories
       shell: pwsh
       run: |
-        echo "=== 验证模型目录结构 ==="
-        Get-ChildItem -Path "模型" -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
+        echo "=== 验证models目录结构 ==="
+        Get-ChildItem -Path "models" -Recurse -Depth 1 | ForEach-Object { Write-Host $_.FullName }
         
-        $cugan = Test-Path "模型/realcugan-ncnn-vulkan/realcugan-ncnn-vulkan.exe"
-        $esrgan = Test-Path "模型/realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan.exe"
-        $waifu2x = Test-Path "模型/waifu2x-ncnn-vulkan/waifu2x-ncnn-vulkan.exe"
-        $anime4k = Test-Path "模型/anime4kcpp/ac_cli.exe"
-        $ffmpeg = Test-Path "前置/ffmpeg/bin/ffmpeg.exe"
+        $cugan = Test-Path "models/realcugan-ncnn-vulkan/realcugan-ncnn-vulkan.exe"
+        $esrgan = Test-Path "models/realesrgan-ncnn-vulkan/realesrgan-ncnn-vulkan.exe"
+        $waifu2x = Test-Path "models/waifu2x-ncnn-vulkan/waifu2x-ncnn-vulkan.exe"
+        $anime4k = Test-Path "models/anime4kcpp/ac_cli.exe"
+        $ffmpeg = Test-Path "prereq/ffmpeg/bin/ffmpeg.exe"
         
         echo "CUGAN exe exists: $cugan"
         echo "ESRGAN exe exists: $esrgan"
@@ -160,11 +160,11 @@ jobs:
         echo "FFMPEG exe exists: $ffmpeg"
         
         if (-not ($cugan -and $esrgan -and $waifu2x -and $anime4k -and $ffmpeg)) {
-            echo "警告: 部分模型或工具文件未找到"
-            echo "=== 模型目录 ==="
-            Get-ChildItem -Path "模型" -Recurse | ForEach-Object { Write-Host $_.FullName }
-            echo "=== 前置目录 ==="
-            Get-ChildItem -Path "前置" -Recurse -Depth 2 | ForEach-Object { Write-Host $_.FullName }
+            echo "警告: 部分models或工具文件未找到"
+            echo "=== models目录 ==="
+            Get-ChildItem -Path "models" -Recurse | ForEach-Object { Write-Host $_.FullName }
+            echo "=== prereq目录 ==="
+            Get-ChildItem -Path "prereq" -Recurse -Depth 2 | ForEach-Object { Write-Host $_.FullName }
         }
     
     - name: Setup Python
@@ -180,41 +180,41 @@ jobs:
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $OutputEncoding = [System.Text.Encoding]::UTF8
         
-        New-Item -ItemType Directory -Force -Path "前置"
+        New-Item -ItemType Directory -Force -Path "prereq"
         
         # 下载 Python 3.12.10 嵌入版 (稳定版，兼容性好)
         $url = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip"
         Invoke-WebRequest -Uri $url -OutFile "python-embed.zip"
-        Expand-Archive -Path "python-embed.zip" -DestinationPath "前置/python-3.12.10-embed-amd64"
+        Expand-Archive -Path "python-embed.zip" -DestinationPath "prereq/python-3.12.10-embed-amd64"
         Remove-Item "python-embed.zip"
         
         # 修改 pth 文件以支持 site-packages
-        $pthFile = "前置/python-3.12.10-embed-amd64/python312._pth"
+        $pthFile = "prereq/python-3.12.10-embed-amd64/python312._pth"
         Set-Content -Path $pthFile -Value "python312.zip`n.`nLib/site-packages`nimport site" -Encoding UTF8
         
         # 创建目录结构
-        New-Item -ItemType Directory -Force -Path "前置/python-3.12.10-embed-amd64/Lib/site-packages"
-        New-Item -ItemType Directory -Force -Path "前置/python-3.12.10-embed-amd64/Scripts"
+        New-Item -ItemType Directory -Force -Path "prereq/python-3.12.10-embed-amd64/Lib/site-packages"
+        New-Item -ItemType Directory -Force -Path "prereq/python-3.12.10-embed-amd64/Scripts"
         
         # 下载并安装 pip（设置UTF-8环境变量）
-        Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "前置/python-3.12.10-embed-amd64/get-pip.py"
+        Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile "prereq/python-3.12.10-embed-amd64/get-pip.py"
         $env:PYTHONIOENCODING = "utf-8"
-        & "前置/python-3.12.10-embed-amd64/python.exe" "前置/python-3.12.10-embed-amd64/get-pip.py" --no-warn-script-location 2>&1 | Out-Null
+        & "prereq/python-3.12.10-embed-amd64/python.exe" "prereq/python-3.12.10-embed-amd64/get-pip.py" --no-warn-script-location 2>&1 | Out-Null
         
-        # 验证 pip 安装（抑制版本输出避免编码错误）
-        $pipVersion = & "前置/python-3.12.10-embed-amd64/python.exe" -m pip --version 2>&1
+        # 验证 pip 安装（抑制版本output避免编码错误）
+        $pipVersion = & "prereq/python-3.12.10-embed-amd64/python.exe" -m pip --version 2>&1
         if ($LASTEXITCODE -eq 0) {
           echo "pip installed successfully"
         }
         
         # 安装 Gradio 和依赖
-        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow --no-warn-script-location --disable-pip-version-check -q
+        & "prereq/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow --no-warn-script-location --disable-pip-version-check -q
         
         # 验证安装
         echo "=== Python 环境验证 ==="
-        & "前置/python-3.12.10-embed-amd64/python.exe" --version
-        & "前置/python-3.12.10-embed-amd64/python.exe" -c "import gradio; print(f'Gradio version: {gradio.__version__}')"
-        & "前置/python-3.12.10-embed-amd64/python.exe" -c "import numpy; print(f'NumPy version: {numpy.__version__}')"
+        & "prereq/python-3.12.10-embed-amd64/python.exe" --version
+        & "prereq/python-3.12.10-embed-amd64/python.exe" -c "import gradio; print(f'Gradio version: {gradio.__version__}')"
+        & "prereq/python-3.12.10-embed-amd64/python.exe" -c "import numpy; print(f'NumPy version: {numpy.__version__}')"
         
         # 显示 pth 文件内容
         echo "=== python312._pth 内容 ==="
@@ -255,10 +255,10 @@ jobs:
         Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
         Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
         
-        Copy-Item -Path "模型" -Destination $packageName -Recurse
+        Copy-Item -Path "models" -Destination $packageName -Recurse
         
-        New-Item -ItemType Directory -Force -Path "$packageName/输出"
-        New-Item -ItemType Directory -Force -Path "$packageName/数据"
+        New-Item -ItemType Directory -Force -Path "$packageName/output"
+        New-Item -ItemType Directory -Force -Path "$packageName/data"
         
         # 验证打包内容
         echo "=== Lite package contents ==="
@@ -288,11 +288,11 @@ jobs:
         Copy-Item "README.md" -Destination $packageName -ErrorAction SilentlyContinue
         Copy-Item "LICENSE" -Destination $packageName -ErrorAction SilentlyContinue
         
-        Copy-Item -Path "模型" -Destination $packageName -Recurse
-        Copy-Item -Path "前置" -Destination $packageName -Recurse
+        Copy-Item -Path "models" -Destination $packageName -Recurse
+        Copy-Item -Path "prereq" -Destination $packageName -Recurse
         
-        New-Item -ItemType Directory -Force -Path "$packageName/输出"
-        New-Item -ItemType Directory -Force -Path "$packageName/数据"
+        New-Item -ItemType Directory -Force -Path "$packageName/output"
+        New-Item -ItemType Directory -Force -Path "$packageName/data"
         
         # 验证打包内容
         echo "=== Full package contents ==="

@@ -16,9 +16,9 @@ if exist "venv\Scripts\python.exe" (
 )
 
 REM 检查是否有内置Python (Full版本)
-if exist "前置\python-3.12.10-embed-amd64\python.exe" (
+if exist "prereq\python-3.12.10-embed-amd64\python.exe" (
     echo [检测] 使用内置 Python 3.12 环境
-    set "PYTHON_EXE=前置\python-3.12.10-embed-amd64\python.exe"
+    set "PYTHON_EXE=prereq\python-3.12.10-embed-amd64\python.exe"
     goto :RUN
 )
 
