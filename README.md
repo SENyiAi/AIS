@@ -4,77 +4,55 @@
 
 **简体中文** | [English](#english)
 
-一站式 AI 图像超分辨率工具，集成多个顶级超分引擎，提供简洁的 Web 界面。
+AI 图像超分辨率工具，集成多个超分引擎，提供 Web 界面。
 
 </div>
 
-## ✨ 特性
+## 特性
 
--  **多引擎支持**: Real-CUGAN、Real-ESRGAN、Waifu2x、Anime4KCPP
--  **Web 界面**: 基于 Gradio 的现代化界面
--  **GIF/WebP 动图**: 支持动态图超分，输出 GIF 或 WebP 格式
--  **多语言**: 支持简体中文和英文
--  **GPU 加速**: 基于 Vulkan，支持 NVIDIA/AMD/Intel 显卡
--  **开箱即用**: 下载即用，无需配置环境
--  **实时预览**: WebUI 内提供滑动条预览前后差异
--  **自定义预设**: 保存常用参数组合，一键调用
+- 多引擎支持: Real-CUGAN、Real-ESRGAN、Waifu2x、Anime4KCPP
+- Web 界面: 基于 Gradio
+- 动图支持: GIF/WebP 超分处理
+- 多语言: 简体中文和英文
+- GPU 加速: Vulkan (NVIDIA/AMD/Intel)
+- 开箱即用: Full版本内置环境
+- 实时预览: 滑动条对比效果
+- 自定义预设: 保存常用参数
 <div align="center">
   <img src="https://github.com/user-attachments/assets/a39b3aee-86ba-43a2-aa26-0ed6acfd83a3" height="200" alt="界面预览" />
   <img src="https://github.com/user-attachments/assets/b24ddf12-7cc3-4c7c-82aa-386b998ed269" height="200" alt="噪点去除" />
 </div>
 
-## 🚀 快速开始
+## 快速开始
 
-### 方式一：下载发行版（推荐）
+### 方式一：下载发行版
 
-前往 [Releases](https://github.com/SENyiAi/AIS/releases) 下载最新版本：
+前往 [Releases](https://github.com/SENyiAi/AIS/releases) 下载最新版本。
 
-| 版本 | 说明 | 适用场景 |
-|------|------|----------|
-| **Full (完整版)** | 内置 Python 3.12 + Gradio，开箱即用 | 推荐大多数用户 |
-| **Lite (精简版)** | 仅包含核心文件，需自行安装 Python | 已有 Python 环境的用户 |
+| 版本 | 说明 |
+|------|------|
+| Full | 内置 Python 环境，开箱即用 |
+| Lite | 需自行安装 Python 3.10+ |
 
-**完整版使用步骤：**
-1. 下载 `AIS-vX.X.X-Full.zip`
-2. 解压缩到任意目录（路径不要有中文）
-3. 双击 `启动.bat` 运行
-4. 浏览器访问 http://127.0.0.1:7860
+**Full版使用：**
+1. 解压到任意目录（路径避免中文）
+2. 双击 `启动.bat`
+3. 访问 http://127.0.0.1:7860
 
-**精简版使用步骤：**
-1. 确保已安装 Python 3.10+
-2. 下载 `AIS-vX.X.X-Lite.zip` 并解压
-3. **推荐方式**：双击运行 `安装依赖.bat`
-   - 自动创建虚拟环境
-   - 默认使用清华源加速安装（国内用户）
-4. **手动方式**：
-   ```bash
-   # 创建虚拟环境
-   python -m venv venv
-   venv\Scripts\activate  # Windows
-   # source venv/bin/activate  # Linux/Mac
-   
-   # 安装依赖（国内用户使用清华源）
-   pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-   ```
-5. 双击 `启动.bat` 运行
+**Lite版使用：**
+1. 解压文件
+2. 双击 `安装依赖.bat`（自动创建虚拟环境，国内默认清华源）
+3. 双击 `启动.bat`
 
 ### 方式二：从源码运行
 
 ```bash
-# 克隆仓库
 git clone https://github.com/SENyiAi/AIS.git
 cd AIS
-
-# 推荐：创建虚拟环境
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate  # Windows
-
-# 安装依赖
-# 国内用户（推荐使用清华源）
+source venv/bin/activate  # Linux/Mac, Windows用venv\Scripts\activate
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-# 国外用户
-# pip install -r requirements.txt
+python AIS_WebUI.py
 
 # 下载模型文件（放入 模型/ 目录）
 # - realcugan-ncnn-vulkan
@@ -89,60 +67,53 @@ python AIS_WebUI.py
 
 | 引擎 | 特点 | 推荐场景 |
 |------|------|----------|
-| **Real-CUGAN** | 专为动漫设计，细节保留出色 | 动漫截图、插画 |
-| **Real-ESRGAN** | 通用性强，效果稳定 | 照片、混合内容 |
-| **Waifu2x** | 经典算法，速度快 | 快速预览、批量处理 |
-| **Anime4KCPP** | 极速处理，支持小数倍率 | 视频、GIF 动图 |
+| Real-CUGAN | 专为动漫设计 | 动漫截图、插画 |
+| Real-ESRGAN | 通用性强 | 照片、混合内容 |
+| Waifu2x | 经典算法 | 快速处理 |
+| Anime4KCPP | 极速处理 | 视频、GIF |
 
-## 🎬 动图超分
+## 动图超分
 
-支持 GIF 动图超分辨率处理：
+支持 GIF 动态图超分辨率处理。
 
-- **输入**: GIF 动态图
-- **输出格式**: 
-  - **WebP** (推荐): 24-bit 真彩色，无色带，文件更小
-  - **GIF**: 256 色限制，兼容性最好
-- **处理方式**: 逐帧超分后重组，可选 FFmpeg 合成
+输出格式：
+- WebP (推荐): 24-bit 真彩色，文件更小
+- GIF: 256 色，兼容性好
 
-## 🛠️ 高级参数
+处理方式：逐帧超分后重组，可选 FFmpeg 合成。
 
-所有引擎都支持以下高级参数：
+## 高级参数
 
-- **TTA 模式**: 8倍时间换取更好效果
-- **Tile 大小**: 控制显存占用
-- **GPU 选择**: 多显卡选择
-- **线程数**: 加载:处理:保存
-- **输出格式**: PNG/JPG/WebP
+- TTA 模式: 提升画质
+- Tile 大小: 控制显存占用
+- GPU 选择: 多显卡支持
+- 线程数: 加载:处理:保存
+- 输出格式: PNG/JPG/WebP
 
-## 📁 目录结构
+## 目录结构
 
 ```
 AIS/
 ├── AIS_WebUI.py      # WebUI 主程序
 ├── AIS.py            # 命令行版本
-├── i18n.py           # i18n 模块
 ├── 模型/             # 超分引擎
-│   ├── realcugan-ncnn-vulkan-*/
-│   ├── realesrgan-ncnn-vulkan-*/
-│   ├── waifu2x-ncnn-vulkan-*/
-│   └── Anime4KCPP-CLI-*/
-├── 前置/             # Python 嵌入版 + FFmpeg
+├── 前置/             # Python + FFmpeg (Full版)
 ├── 输出/             # 处理结果
-└── 数据/             # 配置、预设和日志
+└── 数据/             # 配置、预设、日志
 ```
 
-## 📄 许可证
+## 许可证
 
- GPL-3.0 license
+GPL-3.0 license
 
-## 🙏 致谢
+## 致谢
 
-- [Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN) - Bilibili AI Lab
+- [Real-CUGAN](https://github.com/bilibili/ailab) - Bilibili
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) - Xintao Wang
 - [Waifu2x](https://github.com/nihui/waifu2x-ncnn-vulkan) - nihui
 - [Anime4KCPP](https://github.com/TianZerL/Anime4KCPP) - TianZerL
-- [FFmpeg](https://ffmpeg.org/) - FFmpeg team
-- [Gradio](https://gradio.app/) - Gradio team
+- [FFmpeg](https://ffmpeg.org/)
+- [Gradio](https://gradio.app/)
 
 ---
 
