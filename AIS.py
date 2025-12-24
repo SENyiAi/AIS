@@ -15,16 +15,16 @@ if not OUTPUT_DIR.exists():
     OUTPUT_DIR.mkdir()
 
 # 引擎路径配置 (与 WebUI 一致)
-CUGAN_DIR = MODEL_DIR / "realcugan-ncnn-vulkan-20220728-windows"
+CUGAN_DIR = MODEL_DIR / "realcugan-ncnn-vulkan"
 CUGAN_EXE = CUGAN_DIR / "realcugan-ncnn-vulkan.exe"
 CUGAN_MODEL_SE = CUGAN_DIR / "models-se"
 CUGAN_MODEL_PRO = CUGAN_DIR / "models-pro"
 
-ESRGAN_DIR = MODEL_DIR / "realesrgan-ncnn-vulkan-20220424-windows"
+ESRGAN_DIR = MODEL_DIR / "realesrgan-ncnn-vulkan"
 ESRGAN_EXE = ESRGAN_DIR / "realesrgan-ncnn-vulkan.exe"
 ESRGAN_MODEL = ESRGAN_DIR / "models"
 
-WAIFU_DIR = MODEL_DIR / "waifu2x-ncnn-vulkan-20250915-windows"
+WAIFU_DIR = MODEL_DIR / "waifu2x-ncnn-vulkan"
 WAIFU_EXE = WAIFU_DIR / "waifu2x-ncnn-vulkan.exe"
 WAIFU_MODEL = WAIFU_DIR / "models-cunet"
 

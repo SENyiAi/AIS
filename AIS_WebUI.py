@@ -1281,7 +1281,7 @@ SHARE_URL: Optional[str] = None
 # 引擎配置 - 使用模型文件夹
 ENGINES: Dict[str, Dict[str, Any]] = {
     "cugan": {
-        "dir": MODEL_DIR / "realcugan-ncnn-vulkan-20220728-windows",
+        "dir": MODEL_DIR / "realcugan-ncnn-vulkan",
         "exe": "realcugan-ncnn-vulkan.exe",
         "models": {
             "SE": "models-se",
@@ -1289,7 +1289,7 @@ ENGINES: Dict[str, Dict[str, Any]] = {
         }
     },
     "esrgan": {
-        "dir": MODEL_DIR / "realesrgan-ncnn-vulkan-20220424-windows",
+        "dir": MODEL_DIR / "realesrgan-ncnn-vulkan",
         "exe": "realesrgan-ncnn-vulkan.exe",
         "models_dir": "models",
         "models": {
@@ -1299,12 +1299,12 @@ ENGINES: Dict[str, Dict[str, Any]] = {
         }
     },
     "waifu2x": {
-        "dir": MODEL_DIR / "waifu2x-ncnn-vulkan-20250915-windows",
+        "dir": MODEL_DIR / "waifu2x-ncnn-vulkan",
         "exe": "waifu2x-ncnn-vulkan.exe",
         "models_dir": "models-cunet"
     },
     "anime4k": {
-        "dir": MODEL_DIR / "Anime4KCPP-CLI-v3.0.0-x64-MSVC",
+        "dir": MODEL_DIR / "anime4kcpp",
         "exe": "ac_cli.exe",
         "models": [
             "acnet-gan",       # GAN 增强模型 (默认, 质量更好)
@@ -1315,7 +1315,7 @@ ENGINES: Dict[str, Dict[str, Any]] = {
 }
 
 # FFmpeg 配置
-FFMPEG_DIR = BASE_DIR / "前置" / "ffmpeg-8.0.1-essentials_build" / "bin"
+FFMPEG_DIR = BASE_DIR / "前置" / "ffmpeg" / "bin"
 FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
 FFPROBE_EXE = FFMPEG_DIR / "ffprobe.exe"
 
