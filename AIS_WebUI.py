@@ -35,32 +35,21 @@ def install_gradio() -> bool:
         return True
     except ImportError:
         print("[提示] Gradio未安装, 正在尝试安装...")
+        print("[安装] 使用pip安装Gradio...")
+        print("[提示] 国内用户建议手动使用清华源安装: pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple")
         
-        # 优先使用本地whl安装
-        local_whl = PREREQ_DIR / "Grodio" / "gradio-6.0.1-py3-none-any.whl"
-        if local_whl.exists():
-            print(f"[安装] 使用本地软件包: {local_whl}")
-            try:
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", 
-                    str(local_whl), "--quiet"
-                ])
-                print("[完成] Gradio安装成功")
-                return True
-            except subprocess.CalledProcessError as e:
-                print(f"[警告] 本地安装失败: {e}")
-        
-        # 尝试在线安装
-        print("[安装] 尝试在线安装Gradio...")
         try:
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", 
                 "gradio", "--quiet"
             ])
-            print("[完成] Gradio在线安装成功")
+            print("[完成] Gradio安装成功")
             return True
         except subprocess.CalledProcessError as e:
             print(f"[错误] Gradio安装失败: {e}")
+            print("[提示] 请尝试手动安装:")
+            print("       pip install gradio")
+            print("       或使用清华源: pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple")
             return False
 
 # 安装Gradio
@@ -1293,7 +1282,7 @@ SHARE_URL: Optional[str] = None
 # 引擎配置 - 使用模型文件夹
 ENGINES: Dict[str, Dict[str, Any]] = {
     "cugan": {
-        "dir": MODEL_DIR / "realcugan-ncnn-vulkan-20220728-windows",
+        "dir": MODEL_DIR / "realcugan-ncnn-vulkan",
         "exe": "realcugan-ncnn-vulkan.exe",
         "models": {
             "SE": "models-se",
@@ -1301,7 +1290,7 @@ ENGINES: Dict[str, Dict[str, Any]] = {
         }
     },
     "esrgan": {
-        "dir": MODEL_DIR / "realesrgan-ncnn-vulkan-20220424-windows",
+        "dir": MODEL_DIR / "realesrgan-ncnn-vulkan",
         "exe": "realesrgan-ncnn-vulkan.exe",
         "models_dir": "models",
         "models": {
@@ -1311,12 +1300,12 @@ ENGINES: Dict[str, Dict[str, Any]] = {
         }
     },
     "waifu2x": {
-        "dir": MODEL_DIR / "waifu2x-ncnn-vulkan-20250915-windows",
+        "dir": MODEL_DIR / "waifu2x-ncnn-vulkan",
         "exe": "waifu2x-ncnn-vulkan.exe",
         "models_dir": "models-cunet"
     },
     "anime4k": {
-        "dir": MODEL_DIR / "Anime4KCPP-CLI-v3.0.0-x64-MSVC",
+        "dir": MODEL_DIR / "anime4kcpp",
         "exe": "ac_cli.exe",
         "models": [
             "acnet-gan",       # GAN 增强模型 (默认, 质量更好)
@@ -1327,7 +1316,7 @@ ENGINES: Dict[str, Dict[str, Any]] = {
 }
 
 # FFmpeg 配置
-FFMPEG_DIR = BASE_DIR / "前置" / "ffmpeg-8.0.1-essentials_build" / "bin"
+FFMPEG_DIR = BASE_DIR / "前置" / "ffmpeg" / "bin"
 FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
 FFPROBE_EXE = FFMPEG_DIR / "ffprobe.exe"
 
