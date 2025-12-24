@@ -35,32 +35,20 @@ def install_gradio() -> bool:
         return True
     except ImportError:
         print("[提示] Gradio未安装, 正在尝试安装...")
+        print("[安装] 使用pip安装Gradio...")
+        print("[提示] 国内用户可使用清华源加速: pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple")
         
-        # 优先使用本地whl安装
-        local_whl = PREREQ_DIR / "Grodio" / "gradio-6.0.1-py3-none-any.whl"
-        if local_whl.exists():
-            print(f"[安装] 使用本地软件包: {local_whl}")
-            try:
-                subprocess.check_call([
-                    sys.executable, "-m", "pip", "install", 
-                    str(local_whl), "--quiet"
-                ])
-                print("[完成] Gradio安装成功")
-                return True
-            except subprocess.CalledProcessError as e:
-                print(f"[警告] 本地安装失败: {e}")
-        
-        # 尝试在线安装
-        print("[安装] 尝试在线安装Gradio...")
         try:
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", 
                 "gradio", "--quiet"
             ])
-            print("[完成] Gradio在线安装成功")
+            print("[完成] Gradio安装成功")
             return True
         except subprocess.CalledProcessError as e:
             print(f"[错误] Gradio安装失败: {e}")
+            print("[提示] 如果安装失败，请尝试使用清华源:")
+            print("       pip install gradio -i https://pypi.tuna.tsinghua.edu.cn/simple")
             return False
 
 # 安装Gradio

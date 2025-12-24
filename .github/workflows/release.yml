@@ -189,8 +189,8 @@ jobs:
         # 验证 pip 安装
         & "前置/python-3.12.10-embed-amd64/python.exe" -m pip --version
         
-        # 安装 Gradio 和依赖（直接安装到 site-packages）
-        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow --no-warn-script-location
+        # 安装 Gradio 和依赖（使用清华源加速下载）
+        & "前置/python-3.12.10-embed-amd64/python.exe" -m pip install gradio pillow -i https://pypi.tuna.tsinghua.edu.cn/simple --no-warn-script-location
         
         # 验证安装
         echo "=== Python 环境验证 ==="
@@ -355,6 +355,7 @@ jobs:
           1. 确保已安装 Python 3.10 或更高版本
           2. 解压缩到任意目录
           3. 运行 `pip install -r requirements.txt` 安装依赖
+             - 国内用户推荐使用清华源加速: `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`
           4. 双击 `启动.bat` 运行
           
           ---
