@@ -57,7 +57,7 @@ source venv/bin/activate  # Linux/Mac, Windows用venv\Scripts\activate
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python AIS_WebUI.py
 
-# 下载模型文件（放入 模型/ 目录）
+# 下载模型文件（放入 models/ 目录）
 # - realcugan-ncnn-vulkan
 # - realesrgan-ncnn-vulkan
 # - waifu2x-ncnn-vulkan
@@ -142,10 +142,10 @@ python AIS_WebUI.py
 AIS/
 ├── AIS_WebUI.py      # WebUI 主程序
 ├── AIS.py            # 命令行版本
-├── 模型/             # 超分引擎
-├── 前置/             # Python + FFmpeg (Full版)
-├── 输出/             # 处理结果
-└── 数据/             # 配置、预设、日志
+├── models/           # 超分引擎
+├── prereq/           # Python + FFmpeg (Full版)
+├── output/           # 处理结果
+└── data/             # 配置、预设、日志
 ```
 
 ## 许可证

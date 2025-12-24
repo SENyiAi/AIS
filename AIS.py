@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Tuple, List, Optional
 
 BASE_DIR = Path(__file__).parent.absolute()
-MODEL_DIR = BASE_DIR / "模型"
-OUTPUT_DIR = BASE_DIR / "输出"
+MODEL_DIR = BASE_DIR / "models"
+OUTPUT_DIR = BASE_DIR / "output"
 
 if not OUTPUT_DIR.exists():
     OUTPUT_DIR.mkdir()

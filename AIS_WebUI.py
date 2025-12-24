@@ -13,9 +13,9 @@ BASE_DIR = Path(__file__).parent.absolute()
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-PREREQ_DIR = BASE_DIR / "前置"
-MODEL_DIR = BASE_DIR / "模型"
-OUTPUT_DIR = BASE_DIR / "输出"
+PREREQ_DIR = BASE_DIR / "prereq"
+MODEL_DIR = BASE_DIR / "models"
+OUTPUT_DIR = BASE_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # 设置本地Python库路径 (支持多个版本)
@@ -68,7 +68,7 @@ import time
 from i18n import t, get_choices, get_current_lang, set_lang, load_lang_config, LANGUAGES
 
 # 数据文件夹 - 存放所有配置和日志
-DATA_DIR = BASE_DIR / "数据"
+DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 # 日志系统
@@ -1308,7 +1308,7 @@ ENGINES: Dict[str, Dict[str, Any]] = {
 }
 
 # FFmpeg 配置
-FFMPEG_DIR = BASE_DIR / "前置" / "ffmpeg" / "bin"
+FFMPEG_DIR = BASE_DIR / "prereq" / "ffmpeg" / "bin"
 FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
 FFPROBE_EXE = FFMPEG_DIR / "ffprobe.exe"
 

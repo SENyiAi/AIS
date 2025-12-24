@@ -51,10 +51,14 @@ Thumbs.db
 desktop.ini
 
 # 前置依赖 (用户需自行下载)
-前置/
+prereq/
 
 # 模型文件 (用户需自行下载)
-模型/
+models/
+
+# 输出和数据目录
+output/
+data/
 
 # 发布包测试目录
 AIS-v*/
