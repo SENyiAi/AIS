@@ -2537,14 +2537,19 @@ def process_gif_image(input_path: str, engine: str, gif_output_format: str = "gi
         
         if success:
             log_info(f"[{format_name}] 处理完成: {out_path.name}")
+            # 处理成功，清理临时文件
+            cleanup_gif_temp(frames_dir)
+            cleanup_gif_temp(processed_dir)
             return str(out_path), f"[完成] {format_name}处理完成，共{total_frames}帧\n保存至: {out_path.name}"
         else:
+            # 处理失败，保留临时文件便于调试
+            log_info(f"[{format_name}] 处理失败，保留临时文件: {frames_dir}, {processed_dir}")
             return None, f"[错误] {assemble_msg}"
     
-    finally:
-        # 清理临时文件
-        cleanup_gif_temp(frames_dir)
-        cleanup_gif_temp(processed_dir)
+    except Exception as e:
+        # 异常情况，保留临时文件
+        log_info(f"[GIF] 处理异常，保留临时文件: {e}")
+        return None, f"[错误] GIF处理异常: {e}"
 
 
 # ============================================================
@@ -3484,12 +3489,15 @@ def process_video_segmented(
         
     except Exception as e:
         log_info(f"[视频切片] 处理异常: {e}")
+        log_info(f"[视频切片] 注意: 切片模式暂不支持断点续传，临时文件保留在: {work_dir}")
         return None, f"[错误] 视频切片处理异常: {e}"
     
     finally:
-        # 清理临时文件
+        # 切片模式不支持断点续传，完成后清理临时文件
+        # 如果处理失败，临时文件会保留供调试
         try:
             if work_dir.exists():
+                log_info(f"[视频切片] 清理临时目录: {work_dir}")
                 shutil.rmtree(work_dir, ignore_errors=True)
         except Exception as e:
             log_info(f"[视频切片] 清理临时文件失败: {e}")
