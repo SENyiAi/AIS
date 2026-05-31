@@ -1271,11 +1271,13 @@ def cleanup_gif_temp(frames_dir: Path):
 # 全局状态
 SHARE_URL: Optional[str] = None
 
+EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
+
 # 引擎配置 - 使用模型文件夹
 ENGINES: Dict[str, Dict[str, Any]] = {
     "cugan": {
         "dir": MODEL_DIR / "realcugan-ncnn-vulkan",
-        "exe": "realcugan-ncnn-vulkan.exe",
+        "exe": f"realcugan-ncnn-vulkan{EXE_SUFFIX}",
         "models": {
             "SE": "models-se",
             "Pro": "models-pro"
@@ -1283,7 +1285,7 @@ ENGINES: Dict[str, Dict[str, Any]] = {
     },
     "esrgan": {
         "dir": MODEL_DIR / "realesrgan-ncnn-vulkan",
-        "exe": "realesrgan-ncnn-vulkan.exe",
+        "exe": f"realesrgan-ncnn-vulkan{EXE_SUFFIX}",
         "models_dir": "models",
         "models": {
             2: "realesr-animevideov3-x2",
@@ -1293,12 +1295,12 @@ ENGINES: Dict[str, Dict[str, Any]] = {
     },
     "waifu2x": {
         "dir": MODEL_DIR / "waifu2x-ncnn-vulkan",
-        "exe": "waifu2x-ncnn-vulkan.exe",
+        "exe": f"waifu2x-ncnn-vulkan{EXE_SUFFIX}",
         "models_dir": "models-cunet"
     },
     "anime4k": {
         "dir": MODEL_DIR / "anime4kcpp",
-        "exe": "ac_cli.exe",
+        "exe": f"ac_cli{EXE_SUFFIX}",
         "models": [
             "acnet-gan",       # GAN 增强模型 (默认, 质量更好)
             "acnet",           # 标准 CNN 模型 (速度更快)
@@ -1309,8 +1311,8 @@ ENGINES: Dict[str, Dict[str, Any]] = {
 
 # FFmpeg 配置
 FFMPEG_DIR = BASE_DIR / "prereq" / "ffmpeg" / "bin"
-FFMPEG_EXE = FFMPEG_DIR / "ffmpeg.exe"
-FFPROBE_EXE = FFMPEG_DIR / "ffprobe.exe"
+FFMPEG_EXE = FFMPEG_DIR / f"ffmpeg{EXE_SUFFIX}"
+FFPROBE_EXE = FFMPEG_DIR / f"ffprobe{EXE_SUFFIX}"
 
 # 预设配置
 # 预设配置 - 使用 key 而非直接文本，便于 i18n

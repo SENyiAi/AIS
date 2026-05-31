@@ -4,7 +4,7 @@ import json
 
 # 配置文件路径
 BASE_DIR = Path(__file__).parent.absolute()
-DATA_DIR = BASE_DIR / "数据"
+DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
 CONFIG_FILE = DATA_DIR / "config.json"
 

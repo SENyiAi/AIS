@@ -15,17 +15,19 @@ if not OUTPUT_DIR.exists():
     OUTPUT_DIR.mkdir()
 
 # 引擎路径配置 (与 WebUI 一致)
+EXE_SUFFIX = ".exe" if os.name == 'nt' else ""
+
 CUGAN_DIR = MODEL_DIR / "realcugan-ncnn-vulkan"
-CUGAN_EXE = CUGAN_DIR / "realcugan-ncnn-vulkan.exe"
+CUGAN_EXE = CUGAN_DIR / f"realcugan-ncnn-vulkan{EXE_SUFFIX}"
 CUGAN_MODEL_SE = CUGAN_DIR / "models-se"
 CUGAN_MODEL_PRO = CUGAN_DIR / "models-pro"
 
 ESRGAN_DIR = MODEL_DIR / "realesrgan-ncnn-vulkan"
-ESRGAN_EXE = ESRGAN_DIR / "realesrgan-ncnn-vulkan.exe"
+ESRGAN_EXE = ESRGAN_DIR / f"realesrgan-ncnn-vulkan{EXE_SUFFIX}"
 ESRGAN_MODEL = ESRGAN_DIR / "models"
 
 WAIFU_DIR = MODEL_DIR / "waifu2x-ncnn-vulkan"
-WAIFU_EXE = WAIFU_DIR / "waifu2x-ncnn-vulkan.exe"
+WAIFU_EXE = WAIFU_DIR / f"waifu2x-ncnn-vulkan{EXE_SUFFIX}"
 WAIFU_MODEL = WAIFU_DIR / "models-cunet"
 
 def clean_path(user_input: str) -> Path:
